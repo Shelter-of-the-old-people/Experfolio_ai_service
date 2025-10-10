@@ -3,6 +3,7 @@ Dependency Injection for FastAPI.
 FastAPI 의존성 주입 관리.
 """
 from functools import lru_cache
+from fastapi import Depends
 from app.services.embedding_service import EmbeddingService
 from app.services.analysis_service import AnalysisService
 from app.services.search_service import SearchService
@@ -73,7 +74,7 @@ def get_reranker_client() -> RerankerClient:
 # ============================================
 
 def get_portfolio_repository(
-    mongodb_client: MongoDBClient = None
+    mongodb_client: MongoDBClient = Depends(get_mongodb_client_cached)
 ) -> PortfolioRepository:
     """
     Portfolio Repository 인스턴스 생성
@@ -84,9 +85,6 @@ def get_portfolio_repository(
     Returns:
         PortfolioRepository: 포트폴리오 저장소 인스턴스
     """
-    if mongodb_client is None:
-        mongodb_client = get_mongodb_client_cached()
-    
     logger.debug("Creating PortfolioRepository instance")
     return PortfolioRepository(mongodb_client)
 
@@ -120,10 +118,10 @@ def get_analysis_service() -> AnalysisService:
 
 
 def get_search_service(
-    embedding_service: EmbeddingService = None,
-    analysis_service: AnalysisService = None,
-    portfolio_repo: PortfolioRepository = None,
-    reranker: RerankerClient = None
+    embedding_service: EmbeddingService = Depends(get_embedding_service),
+    analysis_service: AnalysisService = Depends(get_analysis_service),
+    portfolio_repo: PortfolioRepository = Depends(get_portfolio_repository),
+    reranker: RerankerClient = Depends(get_reranker_client)
 ) -> SearchService:
     """
     Search Service 인스턴스 생성 (의존성 주입)
@@ -137,17 +135,7 @@ def get_search_service(
     Returns:
         SearchService: 검색 서비스 인스턴스
     """
-    if embedding_service is None:
-        embedding_service = get_embedding_service()
-    if analysis_service is None:
-        analysis_service = get_analysis_service()
-    if portfolio_repo is None:
-        portfolio_repo = get_portfolio_repository()
-    if reranker is None:
-        reranker = get_reranker_client()
-    
     logger.debug("Creating SearchService instance")
-    
     return SearchService(
         embedding_service=embedding_service,
         analysis_service=analysis_service,
@@ -157,10 +145,10 @@ def get_search_service(
 
 
 def get_batch_service(
-    embedding_service: EmbeddingService = None,
-    portfolio_repo: PortfolioRepository = None,
-    ocr_processor: OCRProcessor = None,
-    file_handler: FileHandler = None
+    embedding_service: EmbeddingService = Depends(get_embedding_service),
+    portfolio_repo: PortfolioRepository = Depends(get_portfolio_repository),
+    ocr_processor: OCRProcessor = Depends(get_ocr_processor),
+    file_handler: FileHandler = Depends(get_file_handler)
 ) -> BatchService:
     """
     Batch Service 인스턴스 생성 (의존성 주입)
@@ -174,17 +162,7 @@ def get_batch_service(
     Returns:
         BatchService: 배치 서비스 인스턴스
     """
-    if embedding_service is None:
-        embedding_service = get_embedding_service()
-    if portfolio_repo is None:
-        portfolio_repo = get_portfolio_repository()
-    if ocr_processor is None:
-        ocr_processor = get_ocr_processor()
-    if file_handler is None:
-        file_handler = get_file_handler()
-    
     logger.debug("Creating BatchService instance")
-    
     return BatchService(
         embedding_service=embedding_service,
         portfolio_repo=portfolio_repo,
