@@ -8,7 +8,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.routers import search, health
-from app.api.dependencies import startup_dependencies, shutdown_dependencies, get_batch_service
+from app.api.dependencies import (
+    startup_dependencies, 
+    shutdown_dependencies,
+    get_mongodb_client_cached,
+    get_embedding_service, 
+    get_portfolio_repository, 
+    get_ocr_processor, 
+    get_file_handler
+)
+from app.services.batch_service import BatchService
 from app.scheduler.batch_scheduler import initialize_batch_scheduler
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -20,14 +29,6 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI):
     """
     애플리케이션 라이프사이클 관리
-    
-    Startup:
-        - 의존성 초기화 (MongoDB, 모델 로드)
-        - 배치 스케줄러 시작
-    
-    Shutdown:
-        - 배치 스케줄러 중지
-        - 의존성 정리 (MongoDB 연결 종료)
     """
     # ========== Startup ==========
     logger.info("=" * 70)
@@ -35,13 +36,28 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 70)
     
     try:
-        # 1. 의존성 초기화
+        # 1. 의존성 초기화 (모델 로드, DB 연결 등)
         logger.info("Initializing dependencies...")
         await startup_dependencies()
         
-        # 2. 배치 스케줄러 초기화 및 시작
+        # 2. 배치 스케줄러 초기화 (수동 의존성 주입)
         logger.info("Initializing batch scheduler...")
-        batch_service = get_batch_service()
+        
+        # BatchService에 필요한 객체들을 직접 생성하여 전달
+        # 2-1. Repository를 만들기 위한 DB 클라이언트부터 가져옵니다.
+        db_client = get_mongodb_client_cached()
+        
+        # 2-2. DB 클라이언트를 전달하여 Repository를 생성합니다.
+        portfolio_repo = get_portfolio_repository(mongodb_client=db_client)
+        
+        # 2-3. 모든 부품을 조립하여 BatchService를 완성합니다.
+        batch_service = BatchService(
+            embedding_service=get_embedding_service(),
+            portfolio_repo=portfolio_repo,
+            ocr_processor=get_ocr_processor(),
+            file_handler=get_file_handler()
+        )
+        
         scheduler = initialize_batch_scheduler(batch_service)
         scheduler.start()
         
