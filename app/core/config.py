@@ -61,12 +61,46 @@ class Settings(BaseSettings):
     # 벡터 검색 설정
     VECTOR_SEARCH_LIMIT: int = Field(default=50, description="벡터 검색 초기 결과 수")
     RERANK_TOP_K: int = Field(default=10, description="재순위 후 최종 결과 수")
+
+    # 검색 필터링 설정
+    VECTOR_SEARCH_SCORE_THRESHOLD: float = Field(
+        default=0.0, 
+        description="1단계 필터: 벡터 검색 결과의 최소 유사도 점수"
+    )
+    RERANKER_SCORE_THRESHOLD: float = Field(
+        default=0.1, 
+        description="2단계 필터: 재순위 모델의 최소 관련도 점수"
+    )
+    LLM_MATCH_SCORE_THRESHOLD: float = Field(
+        default=0.3, 
+        description="3단계 필터: LLM 평가 점수(matchScore)의 기준점"
+    )
     
     class Config:
         """Pydantic 설정"""
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = True
+
+    # --- validator 수정/추가 ---
+    @validator("MONGODB_URI")
+    def validate_mongodb_uri(cls, v):
+        """MONGODB_URI 필수 값 및 형식 검증"""
+        if not v or "your-mongodb-uri-here" in v:
+            raise ValueError("MONGODB_URI must be set in .env file.")
+        if not v.startswith("mongodb"):
+            raise ValueError("MONGODB_URI must be a valid MongoDB connection string.")
+        return v
+
+    @validator("OPENAI_API_KEY")
+    def validate_openai_api_key(cls, v):
+        """OPENAI_API_KEY 필수 값 및 형식 검증"""
+        if not v or "your-openai-api-key-here" in v:
+            raise ValueError("OPENAI_API_KEY must be set in .env file.")
+        if not v.startswith("sk-"):
+            raise ValueError("OPENAI_API_KEY must start with 'sk-'.")
+        return v
+    # --------------------------
     
     @validator("LOG_LEVEL")
     def validate_log_level(cls, v):
@@ -95,28 +129,6 @@ class Settings(BaseSettings):
         log_path = Path(v)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         return v
-    
-    def validate_required_settings(self) -> bool:
-        """
-        필수 설정값 존재 여부 검증
-        
-        Returns:
-            bool: 모든 필수 설정이 유효하면 True
-        
-        Raises:
-            ValueError: 필수 설정이 누락되거나 유효하지 않을 경우
-        """
-        required_fields = ["MONGODB_URI", "OPENAI_API_KEY"]
-        
-        for field in required_fields:
-            value = getattr(self, field, None)
-            if not value or value == f"your-{field.lower()}-here":
-                raise ValueError(
-                    f"Required setting '{field}' is missing or has placeholder value. "
-                    f"Please set it in .env file."
-                )
-        
-        return True
 
 
 # 싱글톤 설정 인스턴스
@@ -137,10 +149,11 @@ def get_settings() -> Settings:
     
     if _settings is None:
         try:
+            # 이제 Settings()를 호출하는 시점에 모든 validator가 실행됨
             _settings = Settings()
-            _settings.validate_required_settings()
         except Exception as e:
-            raise ValueError(f"Failed to load settings: {str(e)}")
+            # 설정 로드 실패 시 즉시 에러 발생
+            raise ValueError(f"Failed to load or validate settings: {str(e)}")
     
     return _settings
 

@@ -7,7 +7,7 @@ from datetime import datetime
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError, PyMongoError
 from app.infrastructure.mongodb_client import MongoDBClient
-from app.core.config import settings
+from app.core.config import settings  # 설정 import 추가
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -99,7 +99,7 @@ class PortfolioRepository:
             cursor = self._collection.aggregate(pipeline)
             results = await cursor.to_list(length=limit)
             
-            logger.info(f"Vector search returned {len(results)} results")
+            logger.info(f"Vector search returned {len(results)} results after filtering")
             return results
             
         except PyMongoError as e:
@@ -232,6 +232,13 @@ class PortfolioRepository:
                     "limit": limit
                 }
             },
+            # === 1단계 필터 === 
+            {
+                "$match": {
+                    "score": {"$gte": settings.VECTOR_SEARCH_SCORE_THRESHOLD}
+                }
+            },
+            # =======================
             {
                 "$project": {
                     "userId": 1,

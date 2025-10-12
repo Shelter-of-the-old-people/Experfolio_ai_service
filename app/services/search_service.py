@@ -2,8 +2,9 @@
 Search Service for orchestrating the search process.
 검색 프로세스를 오케스트레이션하는 서비스.
 """
+import asyncio
 import time
-from typing import List
+from typing import List, Tuple
 from app.services.embedding_service import EmbeddingService
 from app.services.analysis_service import AnalysisService
 from app.repositories.portfolio_repository import PortfolioRepository
@@ -11,7 +12,7 @@ from app.infrastructure.reranker_client import RerankerClient
 from app.schemas.response import SearchResponse, CandidateResult
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.core.result import Result, Ok, Err, RateLimitError
+from app.core.result import Result, Ok, Err, RateLimitError, InvalidDataError, NetworkError, SystemError
 
 logger = get_logger(__name__)
 
@@ -29,15 +30,6 @@ class SearchService:
         portfolio_repo: PortfolioRepository,
         reranker: RerankerClient
     ):
-        """
-        SearchService 초기화
-        
-        Args:
-            embedding_service: 임베딩 서비스
-            analysis_service: LLM 분석 서비스
-            portfolio_repo: 포트폴리오 저장소
-            reranker: 재순위 클라이언트
-        """
         self._embedding_service = embedding_service
         self._analysis_service = analysis_service
         self._portfolio_repo = portfolio_repo
@@ -46,175 +38,116 @@ class SearchService:
         logger.info("SearchService initialized")
     
     async def search_portfolios(self, query: str) -> Result:
-        """
-        포트폴리오 검색 전체 프로세스를 실행합니다.
-        
-        Args:
-            query: 자연어 검색 쿼리
-        
-        Returns:
-            Result:
-                - Ok(SearchResponse): 검색 결과
-                - Err: 에러 정보
-        """
         start_time = time.time()
         
         try:
-            logger.info(f"Starting search for query: {query[:50]}...")
+            logger.info(f"Search request received for query: '{query[:50]}...'")
             
-            logger.info("Step 1: Analyzing search intent...")
-            intent_result = self._analysis_service.analyze_search_intent(query)
-            
-            match intent_result:
-                case Ok(intent):
-                    logger.debug(f"Intent: {intent}")
-                case Err():
-                    logger.warning(
-                        f"Intent analysis failed: {intent_result.error_message}, "
-                        "continuing without intent"
-                    )
-            
-            logger.info("Step 2: Embedding query...")
             embedding_result = self._embedding_service.embed_query(query)
-            
-            match embedding_result:
-                case Ok(query_vector):
-                    logger.debug(f"Query vector dimension: {len(query_vector)}")
-                
-                case Err():
-                    logger.error(f"Query embedding failed: {embedding_result.error_message}")
-                    return embedding_result
-            
-            logger.info("Step 3: Performing vector search...")
-            vector_limit = settings.VECTOR_SEARCH_LIMIT
-            
+            if isinstance(embedding_result, Err):
+                logger.error(f"Query embedding failed: {embedding_result.error_message}")
+                return embedding_result
+            query_vector = embedding_result.value
+
             try:
                 search_results = await self._portfolio_repo.vector_search(
                     query_vector, 
-                    limit=vector_limit
+                    limit=settings.VECTOR_SEARCH_LIMIT
                 )
             except Exception as e:
-                logger.error(f"Vector search failed: {str(e)}")
-                from app.core.result import NetworkError
-                return Err(NetworkError(
-                    error=e,
-                    context={"query": query[:50]}
-                ))
-            
-            logger.info(f"Vector search returned {len(search_results)} results")
+                logger.error(f"Vector search failed: {str(e)}", exc_info=True)
+                return Err(NetworkError(error=e, context={"query": query[:50]}))
+
+            logger.info(f"Step 1 (Vector Search): Found {len(search_results)} candidates passing threshold.")
             
             if not search_results:
-                logger.warning("No search results found")
                 elapsed = time.time() - start_time
-                return Ok(SearchResponse(
-                    status="success",
-                    candidates=[],
-                    searchTime=f"{elapsed:.2f}s",
-                    totalResults=0
-                ))
+                logger.info(f"Search completed in {elapsed:.2f}s, no results found at vector search stage.")
+                return Ok(SearchResponse(status="success", candidates=[], searchTime=f"{elapsed:.2f}s", totalResults=0))
             
-            logger.info("Step 4: Reranking results...")
-            top_k = min(settings.RERANK_TOP_K, len(search_results))
             reranked_results = self._reranker.rerank(
                 query, 
-                search_results[:20],
-                top_k=top_k
+                search_results,
+                top_k=settings.RERANK_TOP_K 
             )
-            logger.info(f"Reranked to top {len(reranked_results)} candidates")
-            
-            logger.info("Step 5: Analyzing candidate matches...")
-            candidates = await self._analyze_candidates(query, reranked_results)
-            
+            logger.info(f"Step 2 (Reranker): Filtered to {len(reranked_results)} candidates.")
+
+            if not reranked_results:
+                elapsed = time.time() - start_time
+                logger.info(f"Search completed in {elapsed:.2f}s, no results found after reranking.")
+                return Ok(SearchResponse(status="success", candidates=[], searchTime=f"{elapsed:.2f}s", totalResults=0))
+
+            final_candidates = await self._analyze_candidates(query, reranked_results)
+            logger.info(f"Step 3 (LLM Analysis): Analyzed and finalized {len(final_candidates)} candidates.")
+
             elapsed = time.time() - start_time
             
             response = SearchResponse(
                 status="success",
-                candidates=candidates,
+                candidates=final_candidates,
                 searchTime=f"{elapsed:.2f}s",
-                totalResults=len(candidates)
+                totalResults=len(final_candidates)
             )
             
-            logger.info(f"Search completed in {elapsed:.2f}s with {len(candidates)} results")
+            logger.info(f"Search completed successfully in {elapsed:.2f}s with {len(final_candidates)} results.")
             
             return Ok(response)
             
         except Exception as e:
-            logger.error(f"Unexpected search error: {str(e)}")
-            from app.core.result import NetworkError
-            return Err(NetworkError(
-                error=e,
-                context={"query": query[:50]}
-            ))
-    
+            logger.error(f"An unexpected error occurred during search: {str(e)}", exc_info=True)
+            return Err(SystemError(error=e, context={"query": query[:50]}))
+
     async def _analyze_candidates(
         self, 
         query: str, 
         results: List[dict]
     ) -> List[CandidateResult]:
         """
-        각 후보자의 매칭도를 분석합니다.
-        실패한 후보자는 제외하고, 성공한 후보자만 반환합니다.
-        
-        Args:
-            query: 검색 쿼리
-            results: 재순위된 검색 결과
-        
-        Returns:
-            List[CandidateResult]: 분석된 후보자 목록
+        제한된 병렬성(Semaphore)을 사용하여 최종 후보자 목록에 대해 LLM 분석을 수행합니다.
         """
-        candidates = []
-        rate_limit_count = 0
-        other_error_count = 0
+        semaphore = asyncio.Semaphore(3)
         
-        for i, result in enumerate(results):
-            try:
-                logger.debug(f"Analyzing candidate {i+1}/{len(results)}")
-                
+        async def analyze_with_semaphore(result: dict) -> CandidateResult | None:
+            user_id = result.get('userId', 'unknown')
+            
+            # === 검증용 로그 추가 (시작) ===
+            start_mono = time.monotonic()
+            logger.info(f"[{start_mono:.2f}s] START analysis for '{user_id}' (waiting for semaphore).")
+            # ==============================
+
+            async with semaphore:
+                # === 검증용 로그 추가 (실행) ===
+                acquired_mono = time.monotonic()
+                logger.info(f"[{acquired_mono:.2f}s] RUNNING analysis for '{user_id}' (semaphore acquired).")
+                # ==============================
+
                 portfolio_text = result.get('embeddings', {}).get('searchableText', '')
-                
                 if not portfolio_text:
-                    logger.warning(f"No searchable text for candidate: {result.get('userId', 'unknown')}")
-                    continue
+                    logger.warning(f"No text for candidate '{user_id}', skipping.")
+                    return None
+
+                analysis_result = self._analysis_service.analyze_candidate_match(query, portfolio_text)
                 
-                analysis_result = self._analysis_service.analyze_candidate_match(
-                    query, 
-                    portfolio_text
-                )
-                
+                # === 검증용 로그 추가 (종료) ===
+                end_mono = time.monotonic()
+                logger.info(f"[{end_mono:.2f}s] END analysis for '{user_id}' (duration: {end_mono - acquired_mono:.2f}s).")
+                # ==============================
+
                 match analysis_result:
                     case Ok(analysis):
-                        candidate = CandidateResult(
-                            userId=result.get('userId', ''),
-                            matchScore=float(analysis.get('matchScore', 0.5)),
-                            matchReason=analysis.get('matchReason', ''),
+                        return CandidateResult(
+                            userId=user_id,
+                            matchScore=float(analysis.get('matchScore', 0.0)),
+                            matchReason=analysis.get('matchReason', 'N/A'),
                             keywords=analysis.get('keywords', [])
                         )
-                        candidates.append(candidate)
-                    
-                    case Err(error_type=RateLimitError()):
-                        rate_limit_count += 1
-                        logger.warning(
-                            f"Rate limit hit for candidate {i+1}, "
-                            f"retry after {analysis_result.retry_delay}s"
-                        )
-                    
                     case Err():
-                        other_error_count += 1
-                        logger.error(
-                            f"Analysis failed for candidate {i+1}: "
-                            f"{analysis_result.error_message}"
-                        )
-                
-            except Exception as e:
-                logger.error(f"Unexpected error analyzing candidate {i+1}: {str(e)}")
-                continue
+                        logger.warning(f"Analysis failed for '{user_id}': {analysis_result.error_message}")
+                        return None
+
+        tasks = [analyze_with_semaphore(result) for result in results]
+        candidate_results = await asyncio.gather(*tasks)
         
-        logger.info(f"Successfully analyzed {len(candidates)} candidates")
+        final_candidates = [res for res in candidate_results if res is not None]
         
-        if rate_limit_count > 0:
-            logger.warning(f"{rate_limit_count} candidates skipped due to rate limit")
-        
-        if other_error_count > 0:
-            logger.warning(f"{other_error_count} candidates skipped due to errors")
-        
-        return candidates
+        return final_candidates

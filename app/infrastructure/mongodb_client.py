@@ -131,28 +131,59 @@ class MongoDBClient:
     
     async def create_indexes(self) -> None:
         """
-        필요한 인덱스를 생성합니다.
+        필요한 인덱스를 생성하고, Vector Search Index의 존재를 검증합니다.
         """
         try:
+            logger.info("Creating and verifying indexes...")
             collection = self.get_collection("portfolios")
             
-            # userId 유니크 인덱스
+            # 일반 인덱스 생성
             await collection.create_index("userId", unique=True)
-            logger.info("Created unique index on userId")
-            
-            # processingStatus.needsEmbedding 인덱스 (배치 처리용)
             await collection.create_index("processingStatus.needsEmbedding")
-            logger.info("Created index on processingStatus.needsEmbedding")
-            
-            # basicInfo.gpa 인덱스 (필터링용)
             await collection.create_index("basicInfo.gpa")
-            logger.info("Created index on basicInfo.gpa")
+            logger.info("Standard indexes created/verified.")
             
-            logger.info("All indexes created successfully")
+            # --- Vector Search Index 검증 로직 추가 ---
+            vector_index_name = "kure_vector_index"
+            search_indexes = await collection.list_search_indexes().to_list(length=None)
+            index_names = [idx['name'] for idx in search_indexes]
+            
+            if vector_index_name not in index_names:
+                error_message = f"""
+                ================================================================================
+                [FATAL] MongoDB Vector Search Index '{vector_index_name}' not found!
+                The application cannot start without this index.
+
+                Please create the index in your MongoDB Atlas cluster for the
+                '{self._database_name}.portfolios' collection with the following JSON definition:
+
+                {{
+                  "name": "{vector_index_name}",
+                  "type": "vectorSearch",
+                  "definition": {{
+                    "fields": [
+                      {{
+                        "type": "vector",
+                        "path": "embeddings.kureVector",
+                        "numDimensions": 1024,
+                        "similarity": "cosine"
+                      }}
+                    ]
+                  }}
+                }}
+                ================================================================================
+                """
+                logger.critical(error_message)
+                raise RuntimeError(f"Vector Search Index '{vector_index_name}' not found.")
+            
+            logger.info(f"✓ Vector Search Index '{vector_index_name}' verified.")
+            # ---------------------------------------------
+            
+            logger.info("All indexes are set up correctly.")
             
         except Exception as e:
-            logger.error(f"Failed to create indexes: {str(e)}")
-            # 인덱스 생성 실패는 치명적이지 않으므로 예외를 다시 발생시키지 않음
+            logger.error(f"Failed to create or verify indexes: {str(e)}")
+            raise
     
     @property
     def is_connected(self) -> bool:

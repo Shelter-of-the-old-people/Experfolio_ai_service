@@ -58,7 +58,7 @@ class RerankerClient:
         top_k: int = 10
     ) -> List[Dict]:
         """
-        검색 결과를 재순위합니다.
+        검색 결과를 재순위하고 점수 임계값으로 필터링합니다.
         
         Args:
             query: 검색 쿼리
@@ -67,44 +67,58 @@ class RerankerClient:
             top_k: 반환할 상위 결과 수
         
         Returns:
-            List[Dict]: 재순위된 상위 top_k 후보 리스트
+            List[Dict]: 재순위 및 필터링된 상위 top_k 후보 리스트
         """
         if not candidates:
             logger.warning("No candidates to rerank")
             return []
         
-        if len(candidates) <= top_k:
-            logger.info(f"Candidates ({len(candidates)}) <= top_k ({top_k}), returning all")
-            return candidates
-        
         try:
-            logger.info(f"Reranking {len(candidates)} candidates to top {top_k}")
+            logger.info(f"Reranking {len(candidates)} candidates...")
             
-            # 쿼리-문서 쌍 생성
+            # 1. 쿼리-문서 쌍 생성
             pairs = self._prepare_pairs(query, candidates)
             
-            # CrossEncoder로 점수 계산
+            # 2. CrossEncoder로 점수 계산
             scores = self._model.predict(pairs)
             
-            # 점수와 함께 후보 정렬
+            # 3. 점수와 함께 후보 리스트 생성
             scored_candidates = [
                 {**candidate, 'rerank_score': float(score)}
                 for candidate, score in zip(candidates, scores)
             ]
             
-            # 점수 기준 내림차순 정렬
-            scored_candidates.sort(key=lambda x: x['rerank_score'], reverse=True)
+            # === 2단계 필터  ===
+            # 4. 점수 임계값으로 필터링
+            initial_count = len(scored_candidates)
+            filtered_candidates = [
+                cand for cand in scored_candidates 
+                if cand['rerank_score'] >= settings.RERANKER_SCORE_THRESHOLD
+            ]
             
-            # 상위 top_k 반환
-            top_candidates = scored_candidates[:top_k]
+            filtered_count = len(filtered_candidates)
+            logger.info(
+                f"Reranker filtering: {initial_count} -> {filtered_count} "
+                f"(threshold: {settings.RERANKER_SCORE_THRESHOLD})"
+            )
+            # =======================
+
+            # 5. 점수 기준 내림차순 정렬
+            filtered_candidates.sort(key=lambda x: x['rerank_score'], reverse=True)
             
-            logger.info(f"Reranking complete. Top score: {top_candidates[0]['rerank_score']:.4f}")
+            # 6. 상위 top_k 반환
+            top_candidates = filtered_candidates[:top_k]
+            
+            if top_candidates:
+                logger.info(f"Reranking complete. Top score: {top_candidates[0]['rerank_score']:.4f}")
+            else:
+                logger.info("Reranking complete. No candidates passed the threshold.")
             
             return top_candidates
             
         except Exception as e:
             logger.error(f"Reranking failed: {str(e)}")
-            # 실패 시 원본 순서대로 top_k 반환
+            # 실패 시 원본 순서대로 top_k 반환 (필터링 없이)
             return candidates[:top_k]
     
     def _prepare_pairs(
