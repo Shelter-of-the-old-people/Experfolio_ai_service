@@ -11,6 +11,7 @@ from app.infrastructure.ocr_processor import OCRProcessor
 from app.infrastructure.file_handler import FileHandler
 from app.schemas.batch import BatchResult
 from app.core.logging import get_logger
+from app.core.result import Result, Ok, Err, InvalidDataError, NetworkError
 
 logger = get_logger(__name__)
 
@@ -59,8 +60,6 @@ class BatchService:
         logger.info("=" * 60)
         
         try:
-            # 1. 처리 대상 포트폴리오 조회
-            logger.info("Step 1: Finding portfolios needing embedding...")
             portfolios = await self._portfolio_repo.find_needing_embedding()
             total = len(portfolios)
             
@@ -76,32 +75,38 @@ class BatchService:
                     processingTime="0s"
                 )
             
-            # 2. 각 포트폴리오 처리
             success_count = 0
             failed_count = 0
             failed_ids = []
+            retry_ids = []
             
             for i, portfolio in enumerate(portfolios):
                 portfolio_id = str(portfolio['_id'])
                 logger.info(f"Processing {i+1}/{total}: {portfolio_id}")
                 
-                try:
-                    result = await self.process_single_portfolio(portfolio)
-                    
-                    if result:
+                result = await self.process_single_portfolio(portfolio)
+                
+                match result:
+                    case Ok(processed_id):
                         success_count += 1
-                        logger.info(f"✓ Success: {portfolio_id}")
-                    else:
+                        logger.info(f"✓ Success: {processed_id}")
+                    
+                    case Err() if result.is_retryable:
+                        failed_count += 1
+                        retry_ids.append(portfolio_id)
+                        logger.warning(
+                            f"⚠ Retryable failure: {portfolio_id} "
+                            f"({result.error_message})"
+                        )
+                    
+                    case Err():
                         failed_count += 1
                         failed_ids.append(portfolio_id)
-                        logger.warning(f"✗ Failed: {portfolio_id}")
-                        
-                except Exception as e:
-                    failed_count += 1
-                    failed_ids.append(portfolio_id)
-                    logger.error(f"✗ Error processing {portfolio_id}: {str(e)}")
+                        logger.error(
+                            f"✗ Permanent failure: {portfolio_id} "
+                            f"({result.error_message})"
+                        )
             
-            # 3. 결과 생성
             elapsed = time.time() - start_time
             processing_time = self._format_time(elapsed)
             
@@ -116,8 +121,13 @@ class BatchService:
             logger.info("=" * 60)
             logger.info(f"Batch processing completed in {processing_time}")
             logger.info(f"Success: {success_count}/{total} ({result.success_rate*100:.1f}%)")
-            logger.info(f"Failed: {failed_count}/{total}")
+            logger.info(f"Permanent failures: {len(failed_ids)}")
+            logger.info(f"Retryable failures: {len(retry_ids)}")
             logger.info("=" * 60)
+            
+            if retry_ids:
+                logger.info(f"Retryable IDs: {', '.join(retry_ids[:5])}" + 
+                           (f" and {len(retry_ids)-5} more" if len(retry_ids) > 5 else ""))
             
             return result
             
@@ -133,7 +143,7 @@ class BatchService:
                 processingTime=self._format_time(elapsed)
             )
     
-    async def process_single_portfolio(self, portfolio: Dict) -> bool:
+    async def process_single_portfolio(self, portfolio: Dict) -> Result:
         """
         단일 포트폴리오를 처리합니다.
         
@@ -141,61 +151,70 @@ class BatchService:
             portfolio: 포트폴리오 문서
         
         Returns:
-            bool: 처리 성공 여부
+            Result:
+                - Ok(str): 처리된 portfolio_id
+                - Err: 에러 정보
         """
         portfolio_id = str(portfolio['_id'])
         
         try:
             logger.debug(f"Processing portfolio: {portfolio_id}")
             
-            # 1. 텍스트 수집
             texts = self._collect_texts(portfolio)
             logger.debug(f"Collected {len(texts)} text sections")
             
-            # 2. 첨부파일 처리
             attachment_texts = await self._process_attachments(portfolio)
             texts.extend(attachment_texts)
             logger.debug(f"Total {len(texts)} text sections after attachments")
             
-            # 3. searchableText 생성
             searchable_text = self._create_searchable_text(texts)
             logger.debug(f"Created searchable text: {len(searchable_text)} characters")
             
             if not searchable_text:
                 logger.warning(f"No searchable text for portfolio: {portfolio_id}")
-                return False
+                return Err(InvalidDataError(
+                    error=ValueError("No searchable text"),
+                    context={"portfolio_id": portfolio_id}
+                ))
             
-            # 4. 임베딩 생성
             logger.debug("Generating embedding...")
-            kure_vector = self._embedding_service.embed_passage(searchable_text)
+            embedding_result = self._embedding_service.embed_passage(searchable_text)
             
-            # 5. MongoDB 업데이트
-            logger.debug("Updating portfolio in MongoDB...")
-            success = await self._portfolio_repo.update_embeddings(
-                portfolio_id,
-                searchable_text,
-                kure_vector
-            )
-            
-            return success
+            match embedding_result:
+                case Ok(kure_vector):
+                    logger.debug("Updating portfolio in MongoDB...")
+                    success = await self._portfolio_repo.update_embeddings(
+                        portfolio_id,
+                        searchable_text,
+                        kure_vector
+                    )
+                    
+                    if success:
+                        return Ok(portfolio_id)
+                    else:
+                        return Err(NetworkError(
+                            error=Exception("MongoDB update failed"),
+                            context={"portfolio_id": portfolio_id}
+                        ))
+                
+                case Err():
+                    logger.error(
+                        f"Embedding failed for {portfolio_id}: "
+                        f"{embedding_result.error_message}"
+                    )
+                    return embedding_result
             
         except Exception as e:
-            logger.error(f"Failed to process portfolio {portfolio_id}: {str(e)}")
-            return False
+            logger.error(f"Unexpected error processing {portfolio_id}: {str(e)}")
+            return Err(NetworkError(
+                error=e,
+                context={"portfolio_id": portfolio_id}
+            ))
     
     def _collect_texts(self, portfolio: Dict) -> List[str]:
-        """
-        포트폴리오에서 모든 텍스트를 수집합니다.
-        
-        Args:
-            portfolio: 포트폴리오 문서
-        
-        Returns:
-            List[str]: 수집된 텍스트 목록
-        """
+        """포트폴리오에서 모든 텍스트를 수집합니다."""
         texts = []
         
-        # basicInfo에서 텍스트 수집
         basic_info = portfolio.get('basicInfo', {})
         
         if basic_info.get('name'):
@@ -207,19 +226,15 @@ class BatchService:
         if basic_info.get('desiredPosition'):
             texts.append(f"희망직무: {basic_info['desiredPosition']}")
         
-        # 수상경력
         for award in basic_info.get('awards', []):
             texts.append(f"수상: {award.get('awardName', '')} - {award.get('achievement', '')}")
         
-        # 자격증
         for cert in basic_info.get('certifications', []):
             texts.append(f"자격증: {cert.get('certificationName', '')}")
         
-        # 어학능력
         for lang in basic_info.get('languages', []):
             texts.append(f"어학: {lang.get('testName', '')} {lang.get('score', '')}")
         
-        # portfolioItems에서 텍스트 수집
         for item in portfolio.get('portfolioItems', []):
             if item.get('title'):
                 texts.append(f"제목: {item['title']}")
@@ -229,15 +244,7 @@ class BatchService:
         return texts
     
     async def _process_attachments(self, portfolio: Dict) -> List[str]:
-        """
-        첨부파일을 처리하여 텍스트를 추출합니다.
-        
-        Args:
-            portfolio: 포트폴리오 문서
-        
-        Returns:
-            List[str]: 추출된 텍스트 목록
-        """
+        """첨부파일을 처리하여 텍스트를 추출합니다."""
         texts = []
         
         for item in portfolio.get('portfolioItems', []):
@@ -248,19 +255,15 @@ class BatchService:
                     if not file_path:
                         continue
                     
-                    # 파일 존재 확인
                     if not self._file_handler.file_exists(file_path):
                         logger.warning(f"File not found: {file_path}")
                         continue
                     
-                    # 파일 읽기
                     file_bytes = self._file_handler.read_file(file_path)
                     
-                    # 파일 확장자 추출
                     file_extension = file_path.split('.')[-1]
                     file_extension = f".{file_extension.lower()}"
                     
-                    # OCR 처리
                     extracted_text = self._ocr_processor.extract_text(
                         file_bytes, 
                         file_extension
@@ -277,33 +280,13 @@ class BatchService:
         return texts
     
     def _create_searchable_text(self, texts: List[str]) -> str:
-        """
-        텍스트 목록을 하나의 검색 가능한 텍스트로 결합합니다.
-        
-        Args:
-            texts: 텍스트 목록
-        
-        Returns:
-            str: 결합된 텍스트
-        """
-        # 빈 텍스트 제거 및 공백 정리
+        """텍스트 목록을 하나의 검색 가능한 텍스트로 결합합니다."""
         clean_texts = [text.strip() for text in texts if text and text.strip()]
-        
-        # '\n\n'로 결합
         searchable_text = '\n\n'.join(clean_texts)
-        
         return searchable_text
     
     def _format_time(self, seconds: float) -> str:
-        """
-        초를 읽기 쉬운 형식으로 변환합니다.
-        
-        Args:
-            seconds: 초 단위 시간
-        
-        Returns:
-            str: 포맷된 시간 (예: "15m 30s")
-        """
+        """초를 읽기 쉬운 형식으로 변환합니다."""
         if seconds < 60:
             return f"{seconds:.0f}s"
         

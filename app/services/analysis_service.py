@@ -4,9 +4,15 @@ OpenAI GPT-4를 사용한 분석 서비스.
 """
 from typing import Dict
 import json
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
+from openai import RateLimitError as OpenAIRateLimitError
+from openai import AuthenticationError as OpenAIAuthenticationError
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.result import (
+    Result, Ok, Err,
+    RateLimitError, AuthenticationError, NetworkError, InvalidDataError
+)
 
 logger = get_logger(__name__)
 
@@ -34,12 +40,11 @@ class AnalysisService:
         self._model_name = model_name or settings.OPENAI_MODEL
         self._temperature = temperature or settings.OPENAI_TEMPERATURE
         
-        # OpenAI 클라이언트 초기화
         self._llm_client = OpenAI(api_key=self._api_key)
         
         logger.info(f"AnalysisService initialized with model: {self._model_name}")
     
-    def analyze_search_intent(self, query: str) -> Dict:
+    def analyze_search_intent(self, query: str) -> Result:
         """
         검색 쿼리의 의도를 분석합니다.
         
@@ -47,12 +52,9 @@ class AnalysisService:
             query: 검색 쿼리
         
         Returns:
-            Dict: 분석 결과
-                {
-                    "complexity": "simple" | "complex",
-                    "focus": ["기술스택", "경력", "학력" 등],
-                    "keywords": ["React", "3년" 등]
-                }
+            Result:
+                - Ok(Dict): {"complexity": ..., "focus": [...], "keywords": [...]}
+                - Err: 에러 정보
         """
         try:
             logger.info(f"Analyzing search intent for query: {query[:50]}...")
@@ -75,28 +77,53 @@ class AnalysisService:
                 max_tokens=500
             )
             
-            # 응답 파싱
             result_text = response.choices[0].message.content.strip()
             result = self._parse_json_response(result_text)
             
             logger.info(f"Intent analysis complete: {result.get('complexity', 'unknown')}")
             
-            return result
+            return Ok(result)
+            
+        except OpenAIRateLimitError as e:
+            logger.warning(f"Intent analysis hit rate limit: {str(e)}")
+            return Err(RateLimitError(
+                error=e,
+                context={"query": query[:50], "model": self._model_name}
+            ))
+            
+        except OpenAIAuthenticationError as e:
+            logger.error(f"Intent analysis authentication failed: {str(e)}")
+            return Err(AuthenticationError(
+                error=e,
+                context={"api_key_prefix": self._api_key[:10] + "..."}
+            ))
+            
+        except ValueError as e:
+            logger.error(f"Intent analysis JSON parsing failed: {str(e)}")
+            return Err(InvalidDataError(
+                error=e,
+                context={"query": query[:50]}
+            ))
+            
+        except OpenAIError as e:
+            logger.error(f"Intent analysis OpenAI error: {str(e)}")
+            return Err(NetworkError(
+                error=e,
+                context={"query": query[:50]}
+            ))
             
         except Exception as e:
-            logger.error(f"Intent analysis failed: {str(e)}")
-            # 실패 시 기본값 반환
-            return {
-                "complexity": "simple",
-                "focus": ["기술스택"],
-                "keywords": []
-            }
+            logger.error(f"Intent analysis unexpected error: {str(e)}")
+            return Err(NetworkError(
+                error=e,
+                context={"query": query[:50]}
+            ))
     
     def analyze_candidate_match(
         self, 
         query: str, 
         portfolio_text: str
-    ) -> Dict:
+    ) -> Result:
         """
         후보자와 검색 쿼리의 매칭도를 분석합니다.
         
@@ -105,12 +132,9 @@ class AnalysisService:
             portfolio_text: 포트폴리오 텍스트
         
         Returns:
-            Dict: 매칭 분석 결과
-                {
-                    "matchScore": 0.85,
-                    "matchReason": "매칭 근거 설명",
-                    "keywords": ["React", "TypeScript"]
-                }
+            Result:
+                - Ok(Dict): {"matchScore": ..., "matchReason": ..., "keywords": [...]}
+                - Err: 에러 정보
         """
         try:
             logger.debug(f"Analyzing candidate match for query: {query[:50]}...")
@@ -133,33 +157,57 @@ class AnalysisService:
                 max_tokens=800
             )
             
-            # 응답 파싱
             result_text = response.choices[0].message.content.strip()
             result = self._parse_json_response(result_text)
             
-            logger.debug(f"Match analysis complete: score={result.get('matchScore', 0)}")
+            match_score = result.get('matchScore', -1)
+            if not (0.0 <= match_score <= 1.0):
+                return Err(InvalidDataError(
+                    error=ValueError(f"Invalid matchScore: {match_score}"),
+                    context={"query": query[:50], "matchScore": match_score}
+                ))
             
-            return result
+            logger.debug(f"Match analysis complete: score={match_score}")
+            
+            return Ok(result)
+            
+        except OpenAIRateLimitError as e:
+            logger.warning(f"Match analysis hit rate limit: {str(e)}")
+            return Err(RateLimitError(
+                error=e,
+                context={"query": query[:50], "model": self._model_name}
+            ))
+            
+        except OpenAIAuthenticationError as e:
+            logger.error(f"Match analysis authentication failed: {str(e)}")
+            return Err(AuthenticationError(
+                error=e,
+                context={"api_key_prefix": self._api_key[:10] + "..."}
+            ))
+            
+        except ValueError as e:
+            logger.error(f"Match analysis validation failed: {str(e)}")
+            return Err(InvalidDataError(
+                error=e,
+                context={"query": query[:50]}
+            ))
+            
+        except OpenAIError as e:
+            logger.error(f"Match analysis OpenAI error: {str(e)}")
+            return Err(NetworkError(
+                error=e,
+                context={"query": query[:50]}
+            ))
             
         except Exception as e:
-            logger.error(f"Match analysis failed: {str(e)}")
-            # 실패 시 기본값 반환
-            return {
-                "matchScore": 0.5,
-                "matchReason": "분석 실패",
-                "keywords": []
-            }
+            logger.error(f"Match analysis unexpected error: {str(e)}")
+            return Err(NetworkError(
+                error=e,
+                context={"query": query[:50]}
+            ))
     
     def _create_intent_prompt(self, query: str) -> str:
-        """
-        검색 의도 분석용 프롬프트를 생성합니다.
-        
-        Args:
-            query: 검색 쿼리
-        
-        Returns:
-            str: 프롬프트
-        """
+        """검색 의도 분석용 프롬프트를 생성합니다."""
         return f"""
 다음 채용 검색 쿼리를 분석하세요:
 
@@ -180,17 +228,7 @@ class AnalysisService:
 """
     
     def _create_match_prompt(self, query: str, portfolio_text: str) -> str:
-        """
-        후보자 매칭 분석용 프롬프트를 생성합니다.
-        
-        Args:
-            query: 검색 쿼리
-            portfolio_text: 포트폴리오 텍스트
-        
-        Returns:
-            str: 프롬프트
-        """
-        # 포트폴리오 텍스트가 너무 길면 잘라내기
+        """후보자 매칭 분석용 프롬프트를 생성합니다."""
         if len(portfolio_text) > 3000:
             portfolio_text = portfolio_text[:3000] + "..."
         
@@ -232,18 +270,16 @@ matchScore는 0.0~1.0 사이의 소수점 숫자여야 합니다.
             ValueError: JSON 파싱 실패 시
         """
         try:
-            # markdown 코드 블록 제거
             if '```json' in response_text:
                 response_text = response_text.split('```json')[1].split('```')[0]
             elif '```' in response_text:
                 response_text = response_text.split('```')[1].split('```')[0]
             
-            # JSON 파싱
             result = json.loads(response_text.strip())
             
             return result
             
         except json.JSONDecodeError as e:
             logger.error(f"JSON parsing failed: {str(e)}")
-            logger.error(f"Response text: {response_text}")
+            logger.error(f"Response text: {response_text[:200]}")
             raise ValueError(f"Failed to parse JSON response: {str(e)}")

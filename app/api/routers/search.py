@@ -8,6 +8,7 @@ from app.schemas.response import SearchResponse, ErrorResponse
 from app.services.search_service import SearchService
 from app.api.dependencies import get_search_service
 from app.core.logging import get_logger
+from app.core.result import Ok, Err, InvalidDataError
 
 logger = get_logger(__name__)
 
@@ -19,7 +20,8 @@ router = APIRouter(prefix="/ai", tags=["search"])
     response_model=SearchResponse,
     responses={
         400: {"model": ErrorResponse, "description": "Invalid request"},
-        500: {"model": ErrorResponse, "description": "Internal server error"}
+        500: {"model": ErrorResponse, "description": "Internal server error"},
+        503: {"model": ErrorResponse, "description": "Service temporarily unavailable"}
     },
     summary="포트폴리오 검색",
     description="자연어 쿼리로 포트폴리오를 검색합니다. AI 기반 의미 검색을 수행합니다."
@@ -72,25 +74,39 @@ async def search_portfolios(
     Raises:
         HTTPException: 검색 실패 시
     """
-    try:
-        logger.info(f"Search request received: {request.query[:50]}...")
+    logger.info(f"Search request received: {request.query[:50]}...")
+    
+    result = await search_service.search_portfolios(request.query)
+    
+    match result:
+        case Ok(response):
+            logger.info(
+                f"Search completed: {response.totalResults} results "
+                f"in {response.searchTime}"
+            )
+            return response
         
-        # 검색 실행
-        response = await search_service.search_portfolios(request.query)
+        case Err(error_type=InvalidDataError()):
+            logger.error(f"Invalid search request: {result.error_message}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.error_message
+            )
         
-        logger.info(f"Search completed: {response.totalResults} results in {response.searchTime}")
+        case Err() if result.is_retryable:
+            logger.warning(
+                f"Search temporarily unavailable: {result.error_message}, "
+                f"retry after {result.retry_delay}s"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Service temporarily unavailable. Please retry after {result.retry_delay:.0f} seconds.",
+                headers={"Retry-After": str(int(result.retry_delay))}
+            )
         
-        return response
-        
-    except ValueError as e:
-        logger.error(f"Invalid search request: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        logger.error(f"Search failed: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Search failed. Please try again later."
-        )
+        case Err():
+            logger.error(f"Search failed: {result.error_message}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Search failed. Please try again later."
+            )
