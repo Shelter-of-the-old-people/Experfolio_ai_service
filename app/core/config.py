@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     
     # OpenAI 설정
     OPENAI_API_KEY: str = Field(..., description="OpenAI API 키")
-    OPENAI_MODEL: str = Field(default="gpt-4", description="사용할 OpenAI 모델")
+    OPENAI_MODEL: str = Field(default="gpt-3.5-turbo-0125", description="사용할 OpenAI 모델") # 모델 변경
     OPENAI_TEMPERATURE: float = Field(default=0.7, description="생성 온도")
     
     # KURE 모델 설정
@@ -64,7 +64,7 @@ class Settings(BaseSettings):
 
     # 검색 필터링 설정
     VECTOR_SEARCH_SCORE_THRESHOLD: float = Field(
-        default=0.0, 
+        default=0.7, 
         description="1단계 필터: 벡터 검색 결과의 최소 유사도 점수"
     )
     RERANKER_SCORE_THRESHOLD: float = Field(
@@ -82,7 +82,6 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
         case_sensitive = True
 
-    # --- validator 수정/추가 ---
     @validator("MONGODB_URI")
     def validate_mongodb_uri(cls, v):
         """MONGODB_URI 필수 값 및 형식 검증"""
@@ -100,7 +99,6 @@ class Settings(BaseSettings):
         if not v.startswith("sk-"):
             raise ValueError("OPENAI_API_KEY must start with 'sk-'.")
         return v
-    # --------------------------
     
     @validator("LOG_LEVEL")
     def validate_log_level(cls, v):
@@ -149,10 +147,8 @@ def get_settings() -> Settings:
     
     if _settings is None:
         try:
-            # 이제 Settings()를 호출하는 시점에 모든 validator가 실행됨
             _settings = Settings()
         except Exception as e:
-            # 설정 로드 실패 시 즉시 에러 발생
             raise ValueError(f"Failed to load or validate settings: {str(e)}")
     
     return _settings

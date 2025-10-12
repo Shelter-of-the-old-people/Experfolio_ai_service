@@ -7,7 +7,7 @@ from datetime import datetime
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError, PyMongoError
 from app.infrastructure.mongodb_client import MongoDBClient
-from app.core.config import settings  # 설정 import 추가
+from app.core.config import settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -214,13 +214,6 @@ class PortfolioRepository:
     ) -> List[Dict]:
         """
         MongoDB Vector Search aggregation pipeline을 생성합니다.
-        
-        Args:
-            query_vector: 쿼리 벡터
-            limit: 결과 제한 수
-        
-        Returns:
-            List[Dict]: Aggregation pipeline
         """
         return [
             {
@@ -228,23 +221,25 @@ class PortfolioRepository:
                     "index": self._vector_index_name,
                     "path": "embeddings.kureVector",
                     "queryVector": query_vector,
-                    "numCandidates": limit * 10,  # 후보 수 (limit의 10배)
+                    "numCandidates": limit * 10,
                     "limit": limit
                 }
             },
-            # === 1단계 필터 === 
+            # --- 파이프라인 순서 수정 ---
+            # 1. 먼저 'score' 필드를 생성합니다.
+            {
+                "$project": {
+                    "score": {"$meta": "vectorSearchScore"},
+                    "userId": 1,
+                    "embeddings.searchableText": 1,
+                    "basicInfo": 1
+                }
+            },
+            # 2. 이제 존재하는 'score' 필드로 필터링합니다.
             {
                 "$match": {
                     "score": {"$gte": settings.VECTOR_SEARCH_SCORE_THRESHOLD}
                 }
-            },
-            # =======================
-            {
-                "$project": {
-                    "userId": 1,
-                    "embeddings.searchableText": 1,
-                    "basicInfo": 1,
-                    "score": {"$meta": "vectorSearchScore"}
-                }
             }
+            # -------------------------
         ]

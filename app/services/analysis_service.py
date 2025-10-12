@@ -146,7 +146,7 @@ class AnalysisService:
                 messages=[
                     {
                         "role": "system",
-                        "content": "당신은 채용 매칭 전문가입니다. 항상 JSON 형식으로만 응답하세요."
+                        "content": "You are a highly experienced senior tech recruiter. Your task is to provide a critical and evidence-based analysis and output it in a structured JSON format."
                     },
                     {
                         "role": "user",
@@ -209,51 +209,66 @@ class AnalysisService:
     def _create_intent_prompt(self, query: str) -> str:
         """검색 의도 분석용 프롬프트를 생성합니다."""
         return f"""
-다음 채용 검색 쿼리를 분석하세요:
+Analyze the following recruitment search query and respond in JSON format.
 
-쿼리: "{query}"
+Query: "{query}"
 
-다음 형식의 JSON으로 응답하세요:
+Respond with a JSON object in the following format:
 {{
-  "complexity": "simple" 또는 "complex",
-  "focus": ["기술스택", "경력", "학력", "프로젝트" 등],
-  "keywords": ["추출된", "주요", "키워드"]
+  "complexity": "simple" or "complex",
+  "focus": ["Skills", "Experience", "Education", "Projects", etc.],
+  "keywords": ["extracted", "main", "keywords"]
 }}
 
-- complexity: 쿼리가 단순한지(단일 조건) 복잡한지(다중 조건) 판단
-- focus: 쿼리가 집중하는 영역 (최대 3개)
-- keywords: 검색에 중요한 키워드 추출 (최대 5개)
+- complexity: Determine if the query is simple (single condition) or complex (multiple conditions).
+- focus: Identify the main areas the query focuses on (up to 3).
+- keywords: Extract the most important keywords for the search (up to 5).
 
-반드시 유효한 JSON만 출력하세요. 다른 텍스트는 포함하지 마세요.
+You must only output a valid JSON. Do not include any other text.
 """
     
     def _create_match_prompt(self, query: str, portfolio_text: str) -> str:
         """후보자 매칭 분석용 프롬프트를 생성합니다."""
-        if len(portfolio_text) > 3000:
-            portfolio_text = portfolio_text[:3000] + "..."
+        if len(portfolio_text) > 4000:
+            portfolio_text = portfolio_text[:4000] + "..."
         
         return f"""
-채용 검색 쿼리와 후보자 포트폴리오의 매칭도를 분석하세요.
+Follow these steps in your reasoning process before generating the final JSON:
+1.  **Deconstruct the Query:** Break down the search query into essential requirements (e.g., specific technologies, years of experience, soft skills like 'problem-solving').
+2.  **Scan for Evidence:** Meticulously scan the candidate's portfolio for explicit keywords and implicit evidence related to each requirement.
+3.  **Evaluate Evidence against Scoring Rubric:** For each piece of evidence, evaluate its strength and relevance using the detailed rubric below.
+4.  **Synthesize Reason:** Formulate a concise `matchReason` in **Korean**. This reason MUST be directly supported by the evidence found. If there is no evidence, state that clearly.
+5.  **Extract Keywords:** Identify and extract up to 5 of the most relevant technical skills or project names from the portfolio as keywords, in **Korean**.
+6.  **Finalize JSON:** Construct the final JSON object based on your analysis.
 
-검색 쿼리: "{query}"
+**--- SCORING RUBRIC ---**
+- **1.0 (Perfect Match):** All essential requirements of the query are explicitly and strongly met in the portfolio.
+- **0.7-0.9 (Strong Match):** Most essential requirements are met. Some minor requirements might be inferred rather than explicit.
+- **0.4-0.6 (Partial Match):** Some key requirements are met, but there are significant gaps. The candidate is promising but not a direct fit.
+- **0.1-0.3 (Weak Match):** Only tangential or peripheral connections to the query. The candidate has some related skills but misses the core requirements.
+- **0.0 (No Match):** No meaningful evidence found that relates to the core requirements of the query.
 
-후보자 포트폴리오:
+**--- INPUT DATA ---**
+**Search Query:**
+"{query}"
+
+**Candidate Portfolio:**
 {portfolio_text}
 
-다음 형식의 JSON으로 응답하세요:
+**--- CONSTRAINTS & OUTPUT FORMAT ---**
+- Your FINAL output MUST be a single, valid JSON object and nothing else.
+- The `matchReason` and `keywords` MUST be in Korean.
+- Do NOT hallucinate or invent skills. If a skill is not in the portfolio, it does not exist.
+- Be objective and critical. Overly optimistic scores are not helpful.
+
+**JSON OUTPUT STRUCTURE:**
 {{
-  "matchScore": 0.0에서 1.0 사이의 숫자,
-  "matchReason": "매칭이 적합한 이유를 2-3문장으로 설명",
-  "keywords": ["포트폴리오에서", "발견된", "주요", "키워드"]
+  "matchScore": <A float between 0.0 and 1.0 based on the rubric>,
+  "matchReason": "<Your concise, evidence-based reasoning in Korean (2-3 sentences)>",
+  "keywords": ["<Up to 5 extracted keywords in Korean>"]
 }}
 
-평가 기준:
-1. 쿼리의 요구사항이 포트폴리오에 얼마나 반영되어 있는가
-2. 관련 기술스택, 경험, 프로젝트의 구체성
-3. 전반적인 적합도
-
-반드시 유효한 JSON만 출력하세요. 다른 텍스트는 포함하지 마세요.
-matchScore는 0.0~1.0 사이의 소수점 숫자여야 합니다.
+Now, perform the analysis and provide ONLY the final JSON output.
 """
     
     def _parse_json_response(self, response_text: str) -> Dict:
@@ -270,6 +285,7 @@ matchScore는 0.0~1.0 사이의 소수점 숫자여야 합니다.
             ValueError: JSON 파싱 실패 시
         """
         try:
+            # Markdown 코드 블록 제거 (` ```json ` 또는 ` ``` `)
             if '```json' in response_text:
                 response_text = response_text.split('```json')[1].split('```')[0]
             elif '```' in response_text:
@@ -279,7 +295,7 @@ matchScore는 0.0~1.0 사이의 소수점 숫자여야 합니다.
             
             return result
             
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parsing failed: {str(e)}")
-            logger.error(f"Response text: {response_text[:200]}")
-            raise ValueError(f"Failed to parse JSON response: {str(e)}")
+        except (json.JSONDecodeError, IndexError) as e:
+            logger.error(f"Failed to parse JSON response: {e}")
+            logger.debug(f"Response text that failed parsing: {response_text[:500]}")
+            raise ValueError(f"Failed to parse JSON from LLM response: {e}")

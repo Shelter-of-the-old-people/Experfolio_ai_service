@@ -110,39 +110,33 @@ class SearchService:
         async def analyze_with_semaphore(result: dict) -> CandidateResult | None:
             user_id = result.get('userId', 'unknown')
             
-            # === 검증용 로그 추가 (시작) ===
-            start_mono = time.monotonic()
-            logger.info(f"[{start_mono:.2f}s] START analysis for '{user_id}' (waiting for semaphore).")
-            # ==============================
-
             async with semaphore:
-                # === 검증용 로그 추가 (실행) ===
-                acquired_mono = time.monotonic()
-                logger.info(f"[{acquired_mono:.2f}s] RUNNING analysis for '{user_id}' (semaphore acquired).")
-                # ==============================
-
                 portfolio_text = result.get('embeddings', {}).get('searchableText', '')
                 if not portfolio_text:
                     logger.warning(f"No text for candidate '{user_id}', skipping.")
                     return None
 
-                analysis_result = self._analysis_service.analyze_candidate_match(query, portfolio_text)
+                analysis_result = await asyncio.to_thread(
+                    self._analysis_service.analyze_candidate_match, query, portfolio_text
+                )
                 
-                # === 검증용 로그 추가 (종료) ===
-                end_mono = time.monotonic()
-                logger.info(f"[{end_mono:.2f}s] END analysis for '{user_id}' (duration: {end_mono - acquired_mono:.2f}s).")
-                # ==============================
-
                 match analysis_result:
                     case Ok(analysis):
+                        logger.debug(f"Successfully analyzed candidate '{user_id}'.")
                         return CandidateResult(
                             userId=user_id,
                             matchScore=float(analysis.get('matchScore', 0.0)),
                             matchReason=analysis.get('matchReason', 'N/A'),
                             keywords=analysis.get('keywords', [])
                         )
+                    case Err(error_type=RateLimitError()):
+                        logger.warning(f"Rate limit hit for candidate '{user_id}', skipping. Details: {analysis_result.error_message}")
+                        return None
                     case Err():
-                        logger.warning(f"Analysis failed for '{user_id}': {analysis_result.error_message}")
+                        logger.error(
+                            f"Analysis failed for candidate '{user_id}', skipping. "
+                            f"Error: {analysis_result.error_message}"
+                        )
                         return None
 
         tasks = [analyze_with_semaphore(result) for result in results]

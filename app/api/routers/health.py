@@ -2,67 +2,57 @@
 Health Check Router.
 헬스 체크 라우터.
 """
-from fastapi import APIRouter, Depends
-from app.schemas.response import HealthResponse
-from app.infrastructure.mongodb_client import MongoDBClient
-from app.api.dependencies import get_mongodb_client_cached
+from fastapi import APIRouter, Depends, Response, status
 from app.core.config import settings
 from app.core.logging import get_logger
+
+# --- 의존성 및 모델 변경 ---
+from app.services.health_aggregator import HealthAggregator
+from app.api.dependencies import get_health_aggregator
+from app.schemas.health_status import Status
+# -------------------------
 
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["health"])
 
-
 @router.get(
     "/health",
-    response_model=HealthResponse,
-    summary="헬스 체크",
-    description="서비스 상태를 확인합니다."
+    summary="종합 헬스 체크",
+    description="서비스의 모든 핵심 구성 요소(DB, AI 모델, 외부 API)의 상태를 종합적으로 확인합니다."
 )
 async def health_check(
-    mongodb_client: MongoDBClient = Depends(get_mongodb_client_cached)
-) -> HealthResponse:
+    response: Response,
+    health_aggregator: HealthAggregator = Depends(get_health_aggregator)
+):
     """
-    서비스 헬스 체크 API
+    서비스의 종합 건강 상태를 확인하는 API.
+
+    - **healthy**: 모든 구성 요소가 정상 작동 중입니다. (HTTP 200 OK)
+    - **unhealthy**: 하나 이상의 구성 요소에 문제가 있습니다. (HTTP 503 Service Unavailable)
+
+    응답의 `details` 필드에서 각 구성 요소의 상세 상태를 확인할 수 있습니다.
+    """
+    logger.debug("Comprehensive health check requested.")
     
-    ## 확인 항목:
-    - 서비스 실행 상태
-    - MongoDB 연결 상태
-    - API 버전 정보
+    details = await health_aggregator.check_all()
     
-    ## 응답 예시:
-    ```json
-    {
-        "status": "healthy",
-        "version": "1.0.0",
-        "mongodb": "connected"
+    overall_status = Status.OK
+    for result in details.values():
+        if result.status == Status.UNHEALTHY:
+            overall_status = Status.UNHEALTHY
+            break
+    
+    if overall_status == Status.UNHEALTHY:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        logger.warning(f"Health check resulted in UNHEALTHY state. Details: {details}")
+    else:
+        logger.info("Health check successful: all components are healthy.")
+
+    return {
+        "overall_status": overall_status,
+        "details": details
     }
-    ```
-    
-    Args:
-        mongodb_client: MongoDB 클라이언트 (의존성 주입)
-    
-    Returns:
-        HealthResponse: 헬스 체크 결과
-    """
-    logger.debug("Health check requested")
-    
-    # MongoDB 연결 상태 확인
-    mongodb_status = "connected" if await mongodb_client.ping() else "disconnected"
-    
-    # 전체 상태 판단
-    overall_status = "healthy" if mongodb_status == "connected" else "unhealthy"
-    
-    response = HealthResponse(
-        status=overall_status,
-        version=settings.API_VERSION,
-        mongodb=mongodb_status
-    )
-    
-    logger.debug(f"Health check result: {overall_status}")
-    
-    return response
 
 
 @router.get(
