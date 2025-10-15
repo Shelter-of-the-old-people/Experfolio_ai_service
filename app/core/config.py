@@ -64,7 +64,7 @@ class Settings(BaseSettings):
 
     # 검색 필터링 설정
     VECTOR_SEARCH_SCORE_THRESHOLD: float = Field(
-        default=0.7, 
+        default=0.0, 
         description="1단계 필터: 벡터 검색 결과의 최소 유사도 점수"
     )
     RERANKER_SCORE_THRESHOLD: float = Field(
