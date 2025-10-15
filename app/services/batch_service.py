@@ -45,7 +45,7 @@ class BatchService:
         logger.info("Daily batch processing started.")
 
         try:
-            portfolios = await self._portfolio_repo.find_needing_embedding()
+            portfolios = await self._portfolio_repo.find_portfolios_to_process()
             total = len(portfolios)
 
             if total == 0:
