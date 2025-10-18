@@ -105,17 +105,21 @@ class PortfolioRepository:
         [신규 메소드] 임베딩, portfolioItems(OCR 상태 포함), 처리 상태를 모두 업데이트합니다.
         """
         try:
+            # === 수정된 부분: embeddings 필드를 객체로 한번에 업데이트 ===
             update_data = {
                 "$set": {
-                    "embeddings.searchableText": searchable_text,
-                    "embeddings.kureVector": kure_vector,
-                    "embeddings.lastUpdated": datetime.utcnow(),
+                    "embeddings": {
+                        "searchableText": searchable_text,
+                        "kureVector": kure_vector,
+                        "lastUpdated": datetime.utcnow()
+                    },
                     "portfolioItems": portfolio_items, # OCR 상태가 변경되었을 수 있으므로 덮어쓰기
                     "processingStatus.needsEmbedding": False,
                     "processingStatus.lastProcessed": datetime.utcnow(),
                     "updatedAt": datetime.utcnow()
                 }
             }
+            # ==========================================================
             result = await self._collection.update_one(
                 {"_id": ObjectId(portfolio_id)},
                 update_data

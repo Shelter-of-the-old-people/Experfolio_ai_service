@@ -64,15 +64,15 @@ class Settings(BaseSettings):
 
     # 검색 필터링 설정
     VECTOR_SEARCH_SCORE_THRESHOLD: float = Field(
-        default=0.0, 
+        default=0.5, 
         description="1단계 필터: 벡터 검색 결과의 최소 유사도 점수"
     )
     RERANKER_SCORE_THRESHOLD: float = Field(
-        default=0.1, 
+        default=0.01, 
         description="2단계 필터: 재순위 모델의 최소 관련도 점수"
     )
     LLM_MATCH_SCORE_THRESHOLD: float = Field(
-        default=0.3, 
+        default=0.4, 
         description="3단계 필터: LLM 평가 점수(matchScore)의 기준점"
     )
     

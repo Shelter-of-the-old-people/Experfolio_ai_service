@@ -53,7 +53,7 @@ class AnalysisService:
         
         Returns:
             Result:
-                - Ok(Dict): {"complexity": ..., "focus": [...], "keywords": [...]}
+                - Ok(Dict): {"focus": [...], "keywords": [...]}
                 - Err: 에러 정보
         """
         try:
@@ -66,7 +66,7 @@ class AnalysisService:
                 messages=[
                     {
                         "role": "system",
-                        "content": "당신은 채용 검색 쿼리를 분석하는 전문가입니다. 항상 JSON 형식으로만 응답하세요."
+                        "content": "You are an expert query analyst for a talent search engine. Your task is to deconstruct a user's search query into its core components for filtering and query augmentation. You must always respond only in a valid JSON format."
                     },
                     {
                         "role": "user",
@@ -80,7 +80,7 @@ class AnalysisService:
             result_text = response.choices[0].message.content.strip()
             result = self._parse_json_response(result_text)
             
-            logger.info(f"Intent analysis complete: {result.get('complexity', 'unknown')}")
+            logger.info(f"Intent analysis complete: {result.get('focus', 'N/A')}")
             
             return Ok(result)
             
@@ -209,22 +209,60 @@ class AnalysisService:
     def _create_intent_prompt(self, query: str) -> str:
         """검색 의도 분석용 프롬프트를 생성합니다."""
         return f"""
-Analyze the following recruitment search query and respond in JSON format.
+Analyze the following recruitment search query and respond in JSON format based on the rules and examples below.
+
+--- RULES ---
+
+1.  **JSON Format:**
+    Respond with a JSON object in the following format:
+    {{
+      "focus": ["<list of focus areas>"],
+      "keywords": ["<list of keywords>"]
+    }}
+
+2.  **Focus Categories:**
+    Identify the main areas the query focuses on (up to 3) from the following fixed list:
+    ["TechnicalSkills", "Experience", "Background"]
+
+    - **TechnicalSkills**: Hard skills, tools, frameworks, languages (e.g., React, Python, AWS, Docker).
+    - **Experience**: Career level, domain knowledge, soft skills (e.g., 신입, 3년차, 핀테크, 커머스, 문제해결능력).
+    - **Background**: Education, certifications, location (e.g., 학력, 자격증, 서울).
+
+3.  **Keywords Priority:**
+    Extract the most important keywords (up to 5) following this priority order:
+    1. Programming languages and frameworks (e.g., React, Python, TypeScript)
+    2. Technical platforms and tools (e.g., AWS, Docker, Git)
+    3. Specific job titles or roles (e.g., Frontend Developer, Data Scientist)
+    Focus on concrete, searchable terms.
+
+--- EXAMPLES ---
+
+Query 1: "React와 TypeScript 가능한 신입 프론트엔드 개발자"
+Output 1:
+{{
+  "focus": ["TechnicalSkills", "Experience"],
+  "keywords": ["React", "TypeScript", "프론트엔드 개발자", "신입"]
+}}
+
+Query 2: "서울에서 근무 가능한 3년차 이상 백엔드 엔지니어"
+Output 2:
+{{
+  "focus": ["Background", "Experience", "TechnicalSkills"],
+  "keywords": ["백엔드 엔지니어", "3년 이상", "서울"]
+}}
+
+Query 3: "핀테크 도메인 경험 있는 파이썬 개발자, AWS 자격증 우대"
+Output 3:
+{{
+  "focus": ["Experience", "TechnicalSkills", "Background"],
+  "keywords": ["Python", "핀테크", "AWS", "자격증"]
+}}
+
+--- TASK ---
 
 Query: "{query}"
 
-Respond with a JSON object in the following format:
-{{
-  "complexity": "simple" or "complex",
-  "focus": ["Skills", "Experience", "Education", "Projects", etc.],
-  "keywords": ["extracted", "main", "keywords"]
-}}
-
-- complexity: Determine if the query is simple (single condition) or complex (multiple conditions).
-- focus: Identify the main areas the query focuses on (up to 3).
-- keywords: Extract the most important keywords for the search (up to 5).
-
-You must only output a valid JSON. Do not include any other text.
+You must only output a valid JSON.
 """
     
     def _create_match_prompt(self, query: str, portfolio_text: str) -> str:
@@ -234,21 +272,52 @@ You must only output a valid JSON. Do not include any other text.
         
         return f"""
 Follow these steps in your reasoning process before generating the final JSON:
-1.  **Deconstruct the Query:** Break down the search query into essential requirements (e.g., specific technologies, years of experience, soft skills like 'problem-solving').
-2.  **Scan for Evidence:** Meticulously scan the candidate's portfolio for explicit keywords and implicit evidence related to each requirement.
-3.  **Evaluate Evidence against Scoring Rubric:** For each piece of evidence, evaluate its strength and relevance using the detailed rubric below.
-4.  **Synthesize Reason:** Formulate a concise `matchReason` in **Korean**. This reason MUST be directly supported by the evidence found. If there is no evidence, state that clearly.
-5.  **Extract Keywords:** Identify and extract up to 5 of the most relevant technical skills or project names from the portfolio as keywords, in **Korean**.
-6.  **Finalize JSON:** Construct the final JSON object based on your analysis.
 
-**--- SCORING RUBRIC ---**
-- **1.0 (Perfect Match):** All essential requirements of the query are explicitly and strongly met in the portfolio.
-- **0.7-0.9 (Strong Match):** Most essential requirements are met. Some minor requirements might be inferred rather than explicit.
-- **0.4-0.6 (Partial Match):** Some key requirements are met, but there are significant gaps. The candidate is promising but not a direct fit.
-- **0.1-0.3 (Weak Match):** Only tangential or peripheral connections to the query. The candidate has some related skills but misses the core requirements.
-- **0.0 (No Match):** No meaningful evidence found that relates to the core requirements of the query.
+1.  **Deconstruct Query:**
+    First, analyze the Search Query to identify "Essential Requirements" (must-haves) and "Preferred Requirements" (nice-to-haves).
+    - Essential: Core skills, non-negotiable experience (e.g., 'React', '3년차').
+    - Preferred: '우대', '있으면 좋음' (e.g., 'AWS 자격증 우대').
 
-**--- INPUT DATA ---**
+2.  **Scan for Evidence:**
+    Meticulously scan the Candidate Portfolio for explicit evidence related to BOTH essential and preferred requirements.
+
+3.  **Evaluate Evidence against NEW Scoring Rubric:**
+    Apply the following quantitative rubric based on your findings:
+    - **0.8 - 1.0 (Strong Match):** ALL Essential Requirements are met AND one or more Preferred Requirements are met. (Base score 0.9)
+    - **0.5 - 0.7 (Partial Match):** ALL Essential Requirements are met, but NO Preferred Requirements are met. (Base score 0.7)
+    - **0.1 - 0.4 (Weak Match):** One or more Essential Requirements are NOT met, but there are some related skills.
+    - **0.0 (No Match):** No meaningful evidence found for any essential requirements.
+
+4.  **Synthesize Reason:**
+    Formulate a concise `matchReason` in **Korean**. This reason MUST explicitly state which essential/preferred requirements were met or not met, justifying the score.
+
+5.  **Extract Keywords:**
+    Identify and extract up to 5 of the most relevant technical skills or project names from the portfolio as keywords, in **Korean**.
+
+--- EXAMPLES (Based on NEW Scoring Rubric) ---
+
+**Example 1 (Partial Match - 0.7 Score)**
+* Search Query: "React 3년차 개발자, AWS 자격증 우대"
+* Portfolio Summary: "...React를 메인 스킬로 3년간 4개의 프로젝트를 리딩함. (AWS 관련 언급 없음)..."
+* Ideal Output:
+    {{
+      "matchScore": 0.7,
+      "matchReason": "React 3년 경력이라는 필수 요건은 명확히 충족합니다. 하지만 우대 사항인 AWS 자격증 관련 내용은 포트폴리오에서 확인되지 않았습니다.",
+      "keywords": ["React", "3년 경력", "프로젝트 리딩"]
+    }}
+
+**Example 2 (Strong Match - 0.9 Score)**
+* Search Query: "React 3년차 개발자, AWS 자격증 우대"
+* Portfolio Summary: "...React로 3년간 4개의 프로젝트를 리딩함... AWS SAA 자격증 보유 (2023년 취득)..."
+* Ideal Output:
+    {{
+      "matchScore": 0.9,
+      "matchReason": "React 3년 경력의 필수 요건을 완벽히 충족하며, 우대 사항인 AWS 자격증(SAA) 또한 보유하고 있어 매우 적합합니다.",
+      "keywords": ["React", "3년 경력", "AWS SAA"]
+    }}
+
+--- TASK ---
+
 **Search Query:**
 "{query}"
 
@@ -258,13 +327,13 @@ Follow these steps in your reasoning process before generating the final JSON:
 **--- CONSTRAINTS & OUTPUT FORMAT ---**
 - Your FINAL output MUST be a single, valid JSON object and nothing else.
 - The `matchReason` and `keywords` MUST be in Korean.
-- Do NOT hallucinate or invent skills. If a skill is not in the portfolio, it does not exist.
-- Be objective and critical. Overly optimistic scores are not helpful.
+- Do NOT hallucinate. Base your analysis ONLY on the evidence in the portfolio.
+- Be objective and strictly follow the NEW Scoring Rubric.
 
 **JSON OUTPUT STRUCTURE:**
 {{
   "matchScore": <A float between 0.0 and 1.0 based on the rubric>,
-  "matchReason": "<Your concise, evidence-based reasoning in Korean (2-3 sentences)>",
+  "matchReason": "<Your concise, evidence-based reasoning in Korean>",
   "keywords": ["<Up to 5 extracted keywords in Korean>"]
 }}
 
