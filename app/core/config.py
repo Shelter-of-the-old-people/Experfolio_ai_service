@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     
     # OpenAI 설정
     OPENAI_API_KEY: str = Field(..., description="OpenAI API 키")
-    OPENAI_MODEL: str = Field(default="gpt-3.5-turbo-0125", description="사용할 OpenAI 모델") # 모델 변경
+    OPENAI_MODEL: str = Field(default="gpt-4o", description="사용할 OpenAI 모델") # 모델 변경
     OPENAI_TEMPERATURE: float = Field(default=0.7, description="생성 온도")
     
     # KURE 모델 설정
@@ -68,7 +68,7 @@ class Settings(BaseSettings):
         description="1단계 필터: 벡터 검색 결과의 최소 유사도 점수"
     )
     RERANKER_SCORE_THRESHOLD: float = Field(
-        default=0.01, 
+        default=0.1, 
         description="2단계 필터: 재순위 모델의 최소 관련도 점수"
     )
     LLM_MATCH_SCORE_THRESHOLD: float = Field(
