@@ -72,8 +72,28 @@ class Settings(BaseSettings):
         description="2단계 필터: 재순위 모델의 최소 관련도 점수"
     )
     LLM_MATCH_SCORE_THRESHOLD: float = Field(
-        default=0.4, 
+        default=0.0, 
         description="3단계 필터: LLM 평가 점수(matchScore)의 기준점"
+    )
+    
+    # 병렬 처리 설정
+    CANDIDATE_ANALYSIS_TIMEOUT: float = Field(
+        default=10.0,
+        description="개별 후보자 분석 타임아웃 (초)"
+    )
+    MAX_CONCURRENT_ANALYSIS: int = Field(
+        default=10,
+        description="최대 동시 분석 수 (미래 확장용)"
+    )
+    
+    # GPU 설정
+    USE_GPU: bool = Field(
+        default=True,
+        description="GPU 사용 여부 (가능한 경우 자동 사용)"
+    )
+    FORCE_CPU: bool = Field(
+        default=False,
+        description="강제로 CPU 사용 (디버깅용)"
     )
     
     class Config:

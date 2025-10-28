@@ -2,6 +2,7 @@
 Reranker Client using CrossEncoder.
 CrossEncoder를 사용한 검색 결과 재순위 클라이언트.
 """
+import torch
 from typing import List, Dict, Tuple
 from sentence_transformers import CrossEncoder
 from app.core.config import settings
@@ -32,24 +33,69 @@ class RerankerClient:
     def _load_model(self) -> None:
         """
         CrossEncoder 모델을 로드합니다.
+        GPU가 사용 가능한 경우 자동으로 사용합니다.
         
         Raises:
             Exception: 모델 로드 실패 시
         """
         try:
-            logger.info("Loading CrossEncoder model...")
+            # GPU 사용 가능 여부 확인
+            device = self._select_device()
+            
+            logger.info(f"Loading CrossEncoder model on device: {device}...")
             
             self._model = CrossEncoder(
                 self._model_name,
-                max_length=512,  # 최대 토큰 길이
-                device='cpu'  # GPU 사용 시 'cuda'로 변경
+                max_length=512,
+                device=device
             )
             
-            logger.info(f"CrossEncoder model loaded successfully: {self._model_name}")
+            logger.info(
+                f"CrossEncoder model loaded successfully: {self._model_name} "
+                f"on {device}"
+            )
+            
+            # GPU 메모리 정보 출력 (GPU 사용 시)
+            if device == 'cuda':
+                gpu_name = torch.cuda.get_device_name(0)
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                logger.info(
+                    f"GPU Info: {gpu_name}, "
+                    f"Total Memory: {gpu_memory:.2f} GB"
+                )
             
         except Exception as e:
             logger.error(f"Failed to load CrossEncoder model: {str(e)}")
             raise
+    
+    def _select_device(self) -> str:
+        """
+        사용할 디바이스를 선택합니다.
+        
+        Returns:
+            str: 'cuda' 또는 'cpu'
+        """
+        # 강제 CPU 모드
+        if settings.FORCE_CPU:
+            logger.info("FORCE_CPU=True: Using CPU")
+            return 'cpu'
+        
+        # GPU 비활성화
+        if not settings.USE_GPU:
+            logger.info("USE_GPU=False: Using CPU")
+            return 'cpu'
+        
+        # GPU 사용 가능 여부 확인
+        if torch.cuda.is_available():
+            gpu_count = torch.cuda.device_count()
+            logger.info(f"GPU available: {gpu_count} device(s) detected")
+            return 'cuda'
+        else:
+            logger.warning(
+                "GPU not available. Falling back to CPU. "
+                "This may result in slower performance."
+            )
+            return 'cpu'
     
     def rerank(
         self, 

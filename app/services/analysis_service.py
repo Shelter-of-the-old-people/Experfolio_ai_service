@@ -4,7 +4,7 @@ OpenAI GPT-4를 사용한 분석 서비스.
 """
 from typing import Dict
 import json
-from openai import OpenAI, OpenAIError
+from openai import OpenAI, AsyncOpenAI, OpenAIError
 from openai import RateLimitError as OpenAIRateLimitError
 from openai import AuthenticationError as OpenAIAuthenticationError
 from app.core.config import settings
@@ -41,6 +41,7 @@ class AnalysisService:
         self._temperature = temperature or settings.OPENAI_TEMPERATURE
 
         self._llm_client = OpenAI(api_key=self._api_key)
+        self._async_llm_client = AsyncOpenAI(api_key=self._api_key)
 
         logger.info(f"AnalysisService initialized with model: {self._model_name}")
 
@@ -201,6 +202,93 @@ class AnalysisService:
 
         except Exception as e:
             logger.error(f"Match analysis unexpected error: {str(e)}")
+            return Err(NetworkError(
+                error=e,
+                context={"query": query[:50]}
+            ))
+
+    async def analyze_candidate_match_async(
+        self,
+        query: str,
+        portfolio_text: str
+    ) -> Result:
+        """
+        후보자와 검색 쿼리의 매칭도를 비동기로 분석합니다.
+
+        Args:
+            query: 검색 쿼리
+            portfolio_text: 포트폴리오 텍스트
+
+        Returns:
+            Result:
+                - Ok(Dict): {"matchScore": ..., "matchReason": ..., "keywords": [...]}
+                - Err: 에러 정보
+        """
+        try:
+            logger.debug(f"Analyzing candidate match (async) for query: {query[:50]}...")
+
+            prompt = self._create_match_prompt(query, portfolio_text)
+
+            response = await self._async_llm_client.chat.completions.create(
+                model=self._model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a highly experienced senior tech recruiter acting as an analyst. Your task is to provide a critical, evidence-based analysis comparing a search query to a candidate's portfolio, and output the result in a structured JSON format."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=self._temperature,
+                max_tokens=1000
+            )
+
+            result_text = response.choices[0].message.content.strip()
+            result = self._parse_json_response(result_text)
+
+            match_score = result.get('matchScore', -1)
+            if not (0.0 <= match_score <= 1.0):
+                return Err(InvalidDataError(
+                    error=ValueError(f"Invalid matchScore: {match_score}"),
+                    context={"query": query[:50], "matchScore": match_score}
+                ))
+
+            logger.debug(f"Match analysis (async) complete: score={match_score}")
+
+            return Ok(result)
+
+        except OpenAIRateLimitError as e:
+            logger.warning(f"Match analysis (async) hit rate limit: {str(e)}")
+            return Err(RateLimitError(
+                error=e,
+                context={"query": query[:50], "model": self._model_name}
+            ))
+
+        except OpenAIAuthenticationError as e:
+            logger.error(f"Match analysis (async) authentication failed: {str(e)}")
+            return Err(AuthenticationError(
+                error=e,
+                context={"api_key_prefix": self._api_key[:10] + "..."}
+            ))
+
+        except ValueError as e:
+            logger.error(f"Match analysis (async) validation failed: {str(e)}")
+            return Err(InvalidDataError(
+                error=e,
+                context={"query": query[:50]}
+            ))
+
+        except OpenAIError as e:
+            logger.error(f"Match analysis (async) OpenAI error: {str(e)}")
+            return Err(NetworkError(
+                error=e,
+                context={"query": query[:50]}
+            ))
+
+        except Exception as e:
+            logger.error(f"Match analysis (async) unexpected error: {str(e)}")
             return Err(NetworkError(
                 error=e,
                 context={"query": query[:50]}
