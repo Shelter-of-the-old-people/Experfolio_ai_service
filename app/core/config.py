@@ -72,7 +72,7 @@ class Settings(BaseSettings):
         description="2단계 필터: 재순위 모델의 최소 관련도 점수"
     )
     LLM_MATCH_SCORE_THRESHOLD: float = Field(
-        default=0.0, 
+        default=0.4, 
         description="3단계 필터: LLM 평가 점수(matchScore)의 기준점"
     )
     

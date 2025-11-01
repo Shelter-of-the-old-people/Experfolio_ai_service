@@ -2,6 +2,7 @@
 Embedding Service using KURE-v1 model.
 KURE-v1 모델을 사용한 임베딩 서비스.
 """
+import torch  # GPU 감지를 위해 import 추가
 from typing import List
 from sentence_transformers import SentenceTransformer
 from app.core.config import settings
@@ -39,19 +40,62 @@ class EmbeddingService:
             Exception: 모델 로드 실패 시
         """
         try:
-            logger.info("Loading KURE model... (This may take a few minutes on first run)")
+            # 1. 디바이스 선택 로직 추가
+            device = self._select_device()
+
+            logger.info(f"Loading KURE model on device: {device}... (This may take a few minutes on first run)")
             
+            # 2. 'cpu' 하드코딩 대신 동적 device 사용
             self._model = SentenceTransformer(
                 self._model_name,
-                device='cpu'
+                device=device
             )
             
-            logger.info(f"KURE model loaded successfully: {self._model_name}")
+            logger.info(f"KURE model loaded successfully: {self._model_name} on {device}")
             logger.info(f"Model dimension: {self._dimension}")
+
+            # 3. GPU 사용 시 메모리 정보 로깅 추가
+            if device == 'cuda':
+                gpu_name = torch.cuda.get_device_name(0)
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                logger.info(
+                    f"KURE Model GPU Info: {gpu_name}, "
+                    f"Total Memory: {gpu_memory:.2f} GB"
+                )
             
         except Exception as e:
             logger.error(f"Failed to load KURE model: {str(e)}")
             raise
+
+    def _select_device(self) -> str:
+        """
+        [신규 추가] 사용할 디바이스를 선택합니다.
+        (RerankerClient의 로직과 동일)
+        
+        Returns:
+            str: 'cuda' 또는 'cpu'
+        """
+        # 강제 CPU 모드
+        if settings.FORCE_CPU:
+            logger.info("FORCE_CPU=True: Using CPU for EmbeddingService")
+            return 'cpu'
+        
+        # GPU 비활성화
+        if not settings.USE_GPU:
+            logger.info("USE_GPU=False: Using CPU for EmbeddingService")
+            return 'cpu'
+        
+        # GPU 사용 가능 여부 확인
+        if torch.cuda.is_available():
+            gpu_count = torch.cuda.device_count()
+            logger.info(f"GPU available for EmbeddingService: {gpu_count} device(s) detected")
+            return 'cuda'
+        else:
+            logger.warning(
+                "GPU not available for EmbeddingService. Falling back to CPU. "
+                "This may result in slower embedding performance."
+            )
+            return 'cpu'
     
     def embed_query(self, text: str) -> Result:
         """
