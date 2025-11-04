@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     
     # OpenAI 설정
     OPENAI_API_KEY: str = Field(..., description="OpenAI API 키")
-    OPENAI_MODEL: str = Field(default="gpt-4o", description="사용할 OpenAI 모델") # 모델 변경
+    OPENAI_MODEL: str = Field(default="gpt-4o", description="사용할 OpenAI 모델")
     OPENAI_TEMPERATURE: float = Field(default=0.7, description="생성 온도")
     
     # KURE 모델 설정
@@ -82,8 +82,26 @@ class Settings(BaseSettings):
         description="개별 후보자 분석 타임아웃 (초)"
     )
     MAX_CONCURRENT_ANALYSIS: int = Field(
-        default=10,
-        description="최대 동시 분석 수 (미래 확장용)"
+        default=2,
+        description="최대 동시 분석 수 (Semaphore 제한)"
+    )
+    ANALYSIS_BATCH_SIZE: int = Field(
+        default=3,
+        description="후보자 분석 배치 크기"
+    )
+    
+    # Rate Limit 재시도 설정
+    RATE_LIMIT_MAX_RETRIES: int = Field(
+        default=3,
+        description="Rate Limit 에러 발생 시 최대 재시도 횟수"
+    )
+    RATE_LIMIT_INITIAL_DELAY: float = Field(
+        default=2.0,
+        description="Rate Limit 재시도 초기 대기 시간 (초)"
+    )
+    RATE_LIMIT_BACKOFF_MULTIPLIER: float = Field(
+        default=2.0,
+        description="Rate Limit 재시도 시 대기 시간 증가 배율"
     )
     
     # GPU 설정
@@ -97,14 +115,12 @@ class Settings(BaseSettings):
     )
     
     class Config:
-        """Pydantic 설정"""
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = True
 
     @validator("MONGODB_URI")
     def validate_mongodb_uri(cls, v):
-        """MONGODB_URI 필수 값 및 형식 검증"""
         if not v or "your-mongodb-uri-here" in v:
             raise ValueError("MONGODB_URI must be set in .env file.")
         if not v.startswith("mongodb"):
@@ -113,7 +129,6 @@ class Settings(BaseSettings):
 
     @validator("OPENAI_API_KEY")
     def validate_openai_api_key(cls, v):
-        """OPENAI_API_KEY 필수 값 및 형식 검증"""
         if not v or "your-openai-api-key-here" in v:
             raise ValueError("OPENAI_API_KEY must be set in .env file.")
         if not v.startswith("sk-"):
@@ -122,7 +137,6 @@ class Settings(BaseSettings):
     
     @validator("LOG_LEVEL")
     def validate_log_level(cls, v):
-        """로그 레벨 검증"""
         valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
         if v.upper() not in valid_levels:
             raise ValueError(f"LOG_LEVEL must be one of {valid_levels}")
@@ -130,7 +144,6 @@ class Settings(BaseSettings):
     
     @validator("BATCH_SCHEDULE_TIME")
     def validate_schedule_time(cls, v):
-        """스케줄 시간 형식 검증 (HH:MM)"""
         try:
             hour, minute = v.split(":")
             hour_int = int(hour)
@@ -143,13 +156,11 @@ class Settings(BaseSettings):
     
     @validator("LOG_FILE")
     def create_log_directory(cls, v):
-        """로그 디렉토리 자동 생성"""
         log_path = Path(v)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         return v
 
 
-# 싱글톤 설정 인스턴스
 _settings: Optional[Settings] = None
 
 
@@ -174,5 +185,4 @@ def get_settings() -> Settings:
     return _settings
 
 
-# 편의를 위한 설정 인스턴스 export
 settings = get_settings()
