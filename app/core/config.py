@@ -82,7 +82,7 @@ class Settings(BaseSettings):
         description="개별 후보자 분석 타임아웃 (초)"
     )
     MAX_CONCURRENT_ANALYSIS: int = Field(
-        default=10,
+        default=5,
         description="최대 동시 분석 수 (미래 확장용)"
     )
     
