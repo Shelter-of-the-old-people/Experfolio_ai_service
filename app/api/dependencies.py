@@ -82,9 +82,8 @@ def get_analysis_service() -> AnalysisService:
 @lru_cache()
 def get_query_rewrite_service() -> QueryRewriteService:
     """QueryRewriteService 싱글톤"""
-    llm_client = get_openai_client()
     logger.info("Creating QueryRewriteService instance")
-    return QueryRewriteService(llm_client=llm_client, settings=settings)
+    return QueryRewriteService()  # ← 수정: 인자 없이 호출!
 
 # --- Health Aggregator 의존성 주입 방식 수정 ---
 def get_health_aggregator(
@@ -120,7 +119,6 @@ def get_portfolio_processor(
     embedding_service: EmbeddingService = Depends(get_embedding_service),
     portfolio_repo: PortfolioRepository = Depends(get_portfolio_repository),
     ocr_processor: OCRProcessor = Depends(get_ocr_processor)
-    # file_handler 의존성 제거
 ) -> PortfolioProcessor:
     """PortfolioProcessor 인스턴스 생성"""
     return PortfolioProcessor(

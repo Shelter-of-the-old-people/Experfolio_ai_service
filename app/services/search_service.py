@@ -145,7 +145,7 @@ class SearchService:
                     rerank_score=cand['rerank_score']
                 )
                 for cand in alternative_results
-                if cand['rerank_score'] >= 0.7
+                if ((cand['score'] >= 0.75 and cand['rerank_score'] >= 0.8) or cand['score'] >= 0.75 or cand['rerank_score'] >= 0.8)
             ]
             
             logger.info(f"Created {len(alternative_candidates)} alternative candidates.")
