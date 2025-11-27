@@ -35,15 +35,17 @@ async def search_portfolios(
     
     ## 검색 프로세스:
     1. 검색 의도 분석 (GPT-4)
-    2. 쿼리 임베딩 (KURE-v1)
-    3. 벡터 유사도 검색 (MongoDB)
-    4. 결과 재순위 (CrossEncoder)
-    5. 매칭 분석 (GPT-4)
+    2. 쿼리 재작성 (GPT-4, optional)  ← 추가!
+    3. 쿼리 임베딩 (KURE-v1)
+    4. 벡터 유사도 검색 (MongoDB)
+    5. 결과 재순위 (CrossEncoder)
+    6. 매칭 분석 (GPT-4)
     
     ## 요청 예시:
     ```json
     {
-        "query": "React와 TypeScript 경험이 있는 프론트엔드 개발자"
+        "query": "React와 TypeScript 경험이 있는 프론트엔드 개발자",
+        "enable_rewrite": true
     }
     ```
     
@@ -51,6 +53,13 @@ async def search_portfolios(
     ```json
     {
         "status": "success",
+        "queryRewrite": {
+            "original": "블록체인 개발자",
+            "rewritten": "블록체인 관련 기술을 사용한 개발 경험",
+            "strategy": "natural_generation",
+            "confidence": 0.85,
+            "cached": false
+        },
         "candidates": [
             {
                 "userId": "550e8400-e29b-41d4-a716-446655440000",
@@ -65,18 +74,25 @@ async def search_portfolios(
     ```
     
     Args:
-        request: 검색 요청 (query 포함)
+        request: 검색 요청 (query, enable_rewrite 포함)
         search_service: 검색 서비스 (의존성 주입)
     
     Returns:
-        SearchResponse: 검색 결과
+        SearchResponse: 검색 결과 (queryRewrite 포함)
     
     Raises:
         HTTPException: 검색 실패 시
     """
-    logger.info(f"Search request received: {request.query[:50]}...")
+    logger.info(
+        f"Search request received: {request.query[:50]}... "
+        f"(enable_rewrite: {request.enable_rewrite})"
+    )
     
-    result = await search_service.search_portfolios(request.query)
+    # enable_rewrite 파라미터 전달!
+    result = await search_service.search_portfolios(
+        query=request.query,
+        enable_rewrite=request.enable_rewrite
+    )
     
     match result:
         case Ok(response):
@@ -84,6 +100,12 @@ async def search_portfolios(
                 f"Search completed: {response.totalResults} results "
                 f"in {response.searchTime}"
             )
+            if response.queryRewrite:
+                logger.info(
+                    f"Query rewrite info: "
+                    f"strategy={response.queryRewrite.strategy}, "
+                    f"cached={response.queryRewrite.cached}"
+                )
             return response
         
         case Err(error_type=InvalidDataError()):

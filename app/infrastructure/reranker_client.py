@@ -3,7 +3,7 @@ Reranker Client using CrossEncoder.
 CrossEncoder를 사용한 검색 결과 재순위 클라이언트.
 """
 import torch
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Union
 from sentence_transformers import CrossEncoder
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -39,7 +39,6 @@ class RerankerClient:
             Exception: 모델 로드 실패 시
         """
         try:
-            # GPU 사용 가능 여부 확인
             device = self._select_device()
             
             logger.info(f"Loading CrossEncoder model on device: {device}...")
@@ -55,7 +54,6 @@ class RerankerClient:
                 f"on {device}"
             )
             
-            # GPU 메모리 정보 출력 (GPU 사용 시)
             if device == 'cuda':
                 gpu_name = torch.cuda.get_device_name(0)
                 gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
@@ -75,17 +73,14 @@ class RerankerClient:
         Returns:
             str: 'cuda' 또는 'cpu'
         """
-        # 강제 CPU 모드
         if settings.FORCE_CPU:
             logger.info("FORCE_CPU=True: Using CPU")
             return 'cpu'
         
-        # GPU 비활성화
         if not settings.USE_GPU:
             logger.info("USE_GPU=False: Using CPU")
             return 'cpu'
         
-        # GPU 사용 가능 여부 확인
         if torch.cuda.is_available():
             gpu_count = torch.cuda.device_count()
             logger.info(f"GPU available: {gpu_count} device(s) detected")
@@ -101,8 +96,9 @@ class RerankerClient:
         self, 
         query: str, 
         candidates: List[Dict], 
-        top_k: int = 10
-    ) -> List[Dict]:
+        top_k: int = 10,
+        return_all_filtered: bool = False
+    ) -> Union[List[Dict], Tuple[List[Dict], List[Dict]]]:
         """
         검색 결과를 재순위하고 점수 임계값으로 필터링합니다.
         
@@ -111,12 +107,17 @@ class RerankerClient:
             candidates: 후보 문서 리스트 (각 문서는 Dict)
                        'embeddings.searchableText' 키가 있어야 함
             top_k: 반환할 상위 결과 수
+            return_all_filtered: True일 경우 (top_k, alternative) 튜플 반환
         
         Returns:
-            List[Dict]: 재순위 및 필터링된 상위 top_k 후보 리스트
+            List[Dict] 또는 Tuple[List[Dict], List[Dict]]:
+                - return_all_filtered=False: 상위 top_k 후보 리스트
+                - return_all_filtered=True: (상위 top_k, 나머지 필터링된 후보) 튜플
         """
         if not candidates:
             logger.warning("No candidates to rerank")
+            if return_all_filtered:
+                return [], []
             return []
         
         try:
@@ -134,7 +135,6 @@ class RerankerClient:
                 for candidate, score in zip(candidates, scores)
             ]
             
-            # === 2단계 필터  ===
             # 4. 점수 임계값으로 필터링
             initial_count = len(scored_candidates)
             filtered_candidates = [
@@ -147,12 +147,11 @@ class RerankerClient:
                 f"Reranker filtering: {initial_count} -> {filtered_count} "
                 f"(threshold: {settings.RERANKER_SCORE_THRESHOLD})"
             )
-            # =======================
 
             # 5. 점수 기준 내림차순 정렬
             filtered_candidates.sort(key=lambda x: x['rerank_score'], reverse=True)
             
-            # 6. 상위 top_k 반환
+            # 6. 상위 top_k와 나머지 분리
             top_candidates = filtered_candidates[:top_k]
             
             if top_candidates:
@@ -160,11 +159,20 @@ class RerankerClient:
             else:
                 logger.info("Reranking complete. No candidates passed the threshold.")
             
+            # 7. 반환 형태 결정
+            if return_all_filtered:
+                alternative_candidates = filtered_candidates[top_k:]
+                logger.info(
+                    f"Returning top {len(top_candidates)} + alternative {len(alternative_candidates)} candidates"
+                )
+                return top_candidates, alternative_candidates
+            
             return top_candidates
             
         except Exception as e:
             logger.error(f"Reranking failed: {str(e)}")
-            # 실패 시 원본 순서대로 top_k 반환 (필터링 없이)
+            if return_all_filtered:
+                return candidates[:top_k], []
             return candidates[:top_k]
     
     def _prepare_pairs(
@@ -185,7 +193,6 @@ class RerankerClient:
         pairs = []
         
         for candidate in candidates:
-            # searchableText 추출 (중첩 구조 고려)
             if 'embeddings' in candidate and 'searchableText' in candidate['embeddings']:
                 text = candidate['embeddings']['searchableText']
             elif 'searchableText' in candidate:
@@ -194,8 +201,7 @@ class RerankerClient:
                 logger.warning(f"No searchableText found in candidate: {candidate.get('_id', 'unknown')}")
                 text = ""
             
-            # 텍스트가 너무 길면 잘라내기 (512 토큰 제한)
-            if len(text) > 2000:  # 대략 512 토큰
+            if len(text) > 2000:
                 text = text[:2000]
             
             pairs.append((query, text))

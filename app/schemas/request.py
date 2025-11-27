@@ -16,6 +16,10 @@ class SearchRequest(BaseModel):
         description="자연어 검색 쿼리",
         examples=["React 잘하는 신입 개발자", "백엔드 3년 이상 경력자"]
     )
+    enable_rewrite: bool = Field(
+        default=True,
+        description="쿼리 재작성 기능 활성화 여부 (Phase 8)"
+    )
     
     @validator('query')
     def validate_query(cls, v):
@@ -30,6 +34,7 @@ class SearchRequest(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
-                "query": "React와 TypeScript 경험이 있는 프론트엔드 개발자"
+                "query": "React와 TypeScript 경험이 있는 프론트엔드 개발자",
+                "enable_rewrite": True
             }
         }

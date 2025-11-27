@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     
     # OpenAI 설정
     OPENAI_API_KEY: str = Field(..., description="OpenAI API 키")
-    OPENAI_MODEL: str = Field(default="gpt-4o", description="사용할 OpenAI 모델") # 모델 변경
+    OPENAI_MODEL: str = Field(default="gpt-4o", description="사용할 OpenAI 모델")
     OPENAI_TEMPERATURE: float = Field(default=0.7, description="생성 온도")
     
     # KURE 모델 설정
@@ -59,16 +59,38 @@ class Settings(BaseSettings):
     API_VERSION: str = Field(default="1.0.0", description="API 버전")
     
     # 벡터 검색 설정
-    VECTOR_SEARCH_LIMIT: int = Field(default=50, description="벡터 검색 초기 결과 수")
+    VECTOR_SEARCH_LIMIT: int = Field(default=200, description="벡터 검색 초기 결과 수")
     RERANK_TOP_K: int = Field(default=10, description="재순위 후 최종 결과 수")
+
+    # 쿼리 재작성 설정 (Phase 8)
+    QUERY_REWRITE_ENABLED: bool = Field(
+        default=True, 
+        description="쿼리 재작성 기능 활성화 여부"
+    )
+    QUERY_REWRITE_MIN_LENGTH: int = Field(
+        default=3, 
+        description="재작성을 수행할 최소 쿼리 길이 (글자 수)"
+    )
+    QUERY_REWRITE_TEMPERATURE: float = Field(
+        default=0.3, 
+        description="쿼리 재작성 GPT 온도 (낮을수록 일관성 높음)"
+    )
+    QUERY_REWRITE_MAX_TOKENS: int = Field(
+        default=200, 
+        description="쿼리 재작성 GPT 최대 토큰 수"
+    )
+    QUERY_REWRITE_CACHE_SIZE: int = Field(
+        default=1000, 
+        description="쿼리 재작성 결과 캐시 최대 크기"
+    )
 
     # 검색 필터링 설정
     VECTOR_SEARCH_SCORE_THRESHOLD: float = Field(
-        default=0.5, 
+        default=0.6, 
         description="1단계 필터: 벡터 검색 결과의 최소 유사도 점수"
     )
     RERANKER_SCORE_THRESHOLD: float = Field(
-        default=0.1, 
+        default=0.0, 
         description="2단계 필터: 재순위 모델의 최소 관련도 점수"
     )
     LLM_MATCH_SCORE_THRESHOLD: float = Field(

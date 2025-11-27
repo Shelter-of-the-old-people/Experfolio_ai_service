@@ -2,7 +2,7 @@
 Response schemas for API endpoints.
 API 엔드포인트의 응답 스키마.
 """
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -31,6 +31,46 @@ class CandidateResult(BaseModel):
         }
 
 
+class AlternativeCandidate(BaseModel):
+    """
+    대안 후보자 (Reranker threshold 통과, LLM 분석 없음)
+    """
+    userId: str = Field(..., description="사용자 ID (UUID)")
+    vector_score: float = Field(..., description="벡터 검색 점수 (0.0-1.0)")
+    rerank_score: float = Field(..., description="Reranker 점수")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "userId": "550e8400-e29b-41d4-a716-446655440011",
+                "vector_score": 0.68,
+                "rerank_score": 0.72
+            }
+        }
+
+
+class RewrittenQueryInfo(BaseModel):
+    """
+    쿼리 재작성 정보 (Phase 8)
+    """
+    original: str = Field(..., description="원본 쿼리")
+    rewritten: str = Field(..., description="재작성된 쿼리")
+    strategy: str = Field(..., description="사용된 전략 (natural_generation, skip, failed)")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="재작성 신뢰도")
+    cached: bool = Field(default=False, description="캐시 히트 여부")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "original": "블록체인 백엔드 개발자",
+                "rewritten": "블록체인 관련 기술을 사용한 백엔드 서버 개발 경험",
+                "strategy": "natural_generation",
+                "confidence": 0.85,
+                "cached": False
+            }
+        }
+
+
 class SearchResponse(BaseModel):
     """
     검색 API 응답 스키마
@@ -38,15 +78,30 @@ class SearchResponse(BaseModel):
     status: str = Field(..., description="응답 상태 (success/failed)")
     candidates: List[CandidateResult] = Field(
         default_factory=list,
-        description="검색된 후보자 목록"
+        description="LLM 분석 완료된 상위 후보자 목록"
+    )
+    alternativeCandidates: List[AlternativeCandidate] = Field(
+        default_factory=list,
+        description="Reranker threshold 통과한 나머지 후보자 목록 (LLM 분석 없음)"
     )
     searchTime: str = Field(..., description="검색 소요 시간 (예: '1.23s')")
-    totalResults: int = Field(default=0, description="검색된 총 결과 수")
+    totalResults: int = Field(default=0, description="검색된 총 결과 수 (candidates + alternativeCandidates)")
+    queryRewrite: Optional[RewrittenQueryInfo] = Field(
+        default=None, 
+        description="쿼리 재작성 정보 (Phase 8)"
+    )
     
     class Config:
         json_schema_extra = {
             "example": {
                 "status": "success",
+                "queryRewrite": {
+                    "original": "블록체인 백엔드 개발자",
+                    "rewritten": "블록체인 관련 기술을 사용한 백엔드 서버 개발 경험",
+                    "strategy": "natural_generation",
+                    "confidence": 0.85,
+                    "cached": False
+                },
                 "candidates": [
                     {
                         "userId": "550e8400-e29b-41d4-a716-446655440000",
@@ -61,8 +116,20 @@ class SearchResponse(BaseModel):
                         "keywords": ["React", "프론트엔드", "웹개발"]
                     }
                 ],
+                "alternativeCandidates": [
+                    {
+                        "userId": "550e8400-e29b-41d4-a716-446655440011",
+                        "vector_score": 0.68,
+                        "rerank_score": 0.72
+                    },
+                    {
+                        "userId": "550e8400-e29b-41d4-a716-446655440012",
+                        "vector_score": 0.65,
+                        "rerank_score": 0.70
+                    }
+                ],
                 "searchTime": "1.23s",
-                "totalResults": 2
+                "totalResults": 4
             }
         }
 

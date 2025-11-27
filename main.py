@@ -51,8 +51,8 @@ async def lifespan(app: FastAPI):
         processor = get_portfolio_processor(
             embedding_service=get_embedding_service(),
             portfolio_repo=portfolio_repo,
-            ocr_processor=get_ocr_processor(),
-            file_handler=get_file_handler()
+            ocr_processor=get_ocr_processor()
+            # file_handler 제거됨
         )
         
         executor = get_retry_executor()
@@ -101,7 +101,27 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.API_TITLE,
     version=settings.API_VERSION,
-    description="...", # 설명 생략
+    description="""
+    ## Experfolio AI Service
+    
+    AI 기반 포트폴리오 검색 및 임베딩 서비스입니다.
+    
+    ### 주요 기능:
+    - **자연어 검색**: GPT-4 기반 의미 검색
+    - **벡터 검색**: KURE-v1 임베딩 + MongoDB Vector Search
+    - **자동 배치**: 매일 새벽 2시 자동 임베딩 처리
+    
+    ### 기술 스택:
+    - **임베딩**: KURE-v1 (1024차원)
+    - **LLM**: GPT-4
+    - **재순위**: BGE Reranker v2
+    - **데이터베이스**: MongoDB Atlas
+    - **OCR**: Tesseract
+    
+    ### API 사용법:
+    1. `/health` - 서비스 상태 확인
+    2. `/ai/search` - 포트폴리오 검색
+    """,
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc"

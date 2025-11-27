@@ -9,7 +9,7 @@ from app.services.embedding_service import EmbeddingService
 from app.services.analysis_service import AnalysisService
 from app.repositories.portfolio_repository import PortfolioRepository
 from app.infrastructure.reranker_client import RerankerClient
-from app.schemas.response import SearchResponse, CandidateResult
+from app.schemas.response import SearchResponse, CandidateResult, AlternativeCandidate
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.result import Result, Ok, Err, RateLimitError, InvalidDataError, NetworkError, SystemError
@@ -28,27 +28,56 @@ class SearchService:
         embedding_service: EmbeddingService,
         analysis_service: AnalysisService,
         portfolio_repo: PortfolioRepository,
-        reranker: RerankerClient
+        reranker: RerankerClient,
+        query_rewrite_service
     ):
         self._embedding_service = embedding_service
         self._analysis_service = analysis_service
         self._portfolio_repo = portfolio_repo
         self._reranker = reranker
+        self._query_rewrite_service = query_rewrite_service
         
-        logger.info("SearchService initialized")
+        logger.info("SearchService initialized with QueryRewriteService")
     
-    async def search_portfolios(self, query: str) -> Result:
+    async def search_portfolios(self, query: str, enable_rewrite: bool = True) -> Result:
         start_time = time.time()
         
         try:
             logger.info(f"Search request received for query: '{query[:50]}...'")
             
-            embedding_result = self._embedding_service.embed_query(query)
+            # 1. 쿼리 재작성
+            search_query = query
+            query_rewrite_info = None
+            
+            if enable_rewrite and settings.QUERY_REWRITE_ENABLED:
+                rewrite_result = await self._query_rewrite_service.rewrite_query(
+                    query, 
+                    {},
+                    enable=True
+                )
+                
+                if isinstance(rewrite_result, Ok):
+                    rewritten = rewrite_result.value
+                    search_query = rewritten.rewritten
+                    query_rewrite_info = rewritten
+                    
+                    logger.info(
+                        f"Query rewritten: '{query[:50]}...' → '{search_query[:50]}...' "
+                        f"(strategy: {rewritten.strategy}, cached: {rewritten.cached})"
+                    )
+                else:
+                    logger.warning(f"Query rewrite failed, using original: {rewrite_result.error_message}")
+            else:
+                logger.debug("Query rewrite disabled")
+            
+            # 2. 쿼리 임베딩
+            embedding_result = self._embedding_service.embed_query(search_query)
             if isinstance(embedding_result, Err):
                 logger.error(f"Query embedding failed: {embedding_result.error_message}")
                 return embedding_result
             query_vector = embedding_result.value
 
+            # 3. 벡터 검색
             try:
                 search_results = await self._portfolio_repo.vector_search(
                     query_vector, 
@@ -63,34 +92,82 @@ class SearchService:
             if not search_results:
                 elapsed = time.time() - start_time
                 logger.info(f"Search completed in {elapsed:.2f}s, no results found at vector search stage.")
-                return Ok(SearchResponse(status="success", candidates=[], searchTime=f"{elapsed:.2f}s", totalResults=0))
+                return Ok(SearchResponse(
+                    status="success", 
+                    candidates=[], 
+                    alternativeCandidates=[],
+                    searchTime=f"{elapsed:.2f}s", 
+                    totalResults=0,
+                    queryRewrite=query_rewrite_info
+                ))
             
-            # Reranker 단계 (GPU 가속)
-            reranked_results = self._reranker.rerank(
-                query, 
+            # 4. Reranker 단계 (threshold 통과한 전체 후보 받기)
+            rerank_result = self._reranker.rerank(
+                search_query,
                 search_results,
-                top_k=settings.RERANK_TOP_K 
+                top_k=settings.RERANK_TOP_K,
+                return_all_filtered=True
             )
-            logger.info(f"Step 2 (Reranker): Filtered to {len(reranked_results)} candidates.")
+            
+            # Tuple 언패킹
+            if isinstance(rerank_result, tuple):
+                reranked_results, alternative_results = rerank_result
+            else:
+                reranked_results = rerank_result
+                alternative_results = []
+            
+            logger.info(
+                f"Step 2 (Reranker): Top {len(reranked_results)} candidates + "
+                f"{len(alternative_results)} alternative candidates."
+            )
 
             if not reranked_results:
                 elapsed = time.time() - start_time
                 logger.info(f"Search completed in {elapsed:.2f}s, no results found after reranking.")
-                return Ok(SearchResponse(status="success", candidates=[], searchTime=f"{elapsed:.2f}s", totalResults=0))
+                return Ok(SearchResponse(
+                    status="success", 
+                    candidates=[], 
+                    alternativeCandidates=[],
+                    searchTime=f"{elapsed:.2f}s", 
+                    totalResults=0,
+                    queryRewrite=query_rewrite_info
+                ))
 
-            final_candidates = await self._analyze_candidates(query, reranked_results)
+            # 5. LLM 분석 (Top 10만)
+            final_candidates = await self._analyze_candidates(search_query, reranked_results)
             logger.info(f"Step 3 (LLM Analysis): Analyzed and finalized {len(final_candidates)} candidates.")
 
+            # 6. AlternativeCandidates 생성
+            alternative_candidates = [
+                AlternativeCandidate(
+                    userId=cand['userId'],
+                    vector_score=cand.get('score', 0.0),
+                    rerank_score=cand['rerank_score']
+                )
+                for cand in alternative_results
+                if cand['rerank_score'] >= 0.7
+            ]
+            
+            logger.info(f"Created {len(alternative_candidates)} alternative candidates.")
+
             elapsed = time.time() - start_time
+            
+            total_results = len(final_candidates) + len(alternative_candidates)
             
             response = SearchResponse(
                 status="success",
                 candidates=final_candidates,
+                alternativeCandidates=alternative_candidates,
                 searchTime=f"{elapsed:.2f}s",
-                totalResults=len(final_candidates)
+                totalResults=total_results,
+                queryRewrite=query_rewrite_info
             )
             
-            logger.info(f"Search completed successfully in {elapsed:.2f}s with {len(final_candidates)} results.")
+            logger.info(
+                f"Search completed successfully in {elapsed:.2f}s with {total_results} total results "
+                f"({len(final_candidates)} main + {len(alternative_candidates)} alternative). "
+                f"(original: '{query[:30]}...', rewritten: '{search_query[:30]}...')"
+            )
             
             return Ok(response)
             

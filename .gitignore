@@ -247,3 +247,5 @@ htmlcov/
 
 # Docker
 docker-compose.override.yml
+
+test_portfolios.json
