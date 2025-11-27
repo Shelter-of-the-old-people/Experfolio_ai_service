@@ -58,9 +58,25 @@ class Settings(BaseSettings):
     API_TITLE: str = Field(default="Experfolio AI Service", description="API 제목")
     API_VERSION: str = Field(default="1.0.0", description="API 버전")
     
-    # 벡터 검색 설정
-    VECTOR_SEARCH_LIMIT: int = Field(default=200, description="벡터 검색 초기 결과 수")
-    RERANK_TOP_K: int = Field(default=10, description="재순위 후 최종 결과 수")
+    # Vector Search
+    VECTOR_SEARCH_LIMIT: int = 100
+    VECTOR_SEARCH_THRESHOLD: float = 0.5
+    
+    # LLM Reranker (GPT-4o) - Threshold 기반
+    LLM_RERANKER_THRESHOLD: float = 0.74 
+    LLM_RERANKER_MIN_CANDIDATES: int = 10  # 최소 보장 개수
+    LLM_RERANKER_BRIEF_MAX_CHARS: int = 200
+    LLM_RERANKER_TEMPERATURE: float = 0.0
+    LLM_RERANKER_MAX_TOKENS: int = 3000
+    LLM_RERANKER_TIMEOUT: float = 30.0
+    
+    # LLM 상세 분석 - Top 10개만!
+    LLM_ANALYSIS_TOP_K: int = 10  # 상위 10개만 상세 분석
+    
+    # BGE Reranker - 비활성화
+    USE_BGE_RERANKER: bool = False
+    RERANKER_SCORE_THRESHOLD: float = -999.0
+    RERANK_TOP_K: int = 10
 
     # 쿼리 재작성 설정 (Phase 8)
     QUERY_REWRITE_ENABLED: bool = Field(
@@ -122,7 +138,7 @@ class Settings(BaseSettings):
         """Pydantic 설정"""
         env_file = ".env"
         env_file_encoding = "utf-8"
-        case_sensitive = True
+        case_sensitive = False
 
     @validator("MONGODB_URI")
     def validate_mongodb_uri(cls, v):

@@ -6,12 +6,11 @@ from functools import lru_cache
 from fastapi import Depends
 from openai import AsyncOpenAI
 
-# --- 신규 클래스 import ---
 from app.services.portfolio_processor import PortfolioProcessor
 from app.services.retry_executor import RetryExecutor
 from app.services.health_aggregator import HealthAggregator
 from app.services.query_rewrite_service import QueryRewriteService
-# -------------------------
+from app.services.llm_reranker_service import LLMRerankerService  # ⭐ 신규
 
 from app.services.embedding_service import EmbeddingService
 from app.services.analysis_service import AnalysisService
@@ -21,7 +20,7 @@ from app.repositories.portfolio_repository import PortfolioRepository
 from app.infrastructure.mongodb_client import MongoDBClient, get_mongodb_client
 from app.infrastructure.ocr_processor import OCRProcessor
 from app.infrastructure.file_handler import FileHandler
-from app.infrastructure.reranker_client import RerankerClient
+# from app.infrastructure.reranker_client import RerankerClient  # ❌ BGE 제거
 from app.core.config import settings
 from app.core.logging import get_logger
 
@@ -43,9 +42,10 @@ def get_ocr_processor() -> OCRProcessor:
 def get_file_handler() -> FileHandler:
     return FileHandler()
 
-@lru_cache()
-def get_reranker_client() -> RerankerClient:
-    return RerankerClient()
+# ❌ BGE Reranker 제거
+# @lru_cache()
+# def get_reranker_client() -> RerankerClient:
+#     return RerankerClient()
 
 @lru_cache()
 def get_retry_executor() -> RetryExecutor:
@@ -83,36 +83,40 @@ def get_analysis_service() -> AnalysisService:
 def get_query_rewrite_service() -> QueryRewriteService:
     """QueryRewriteService 싱글톤"""
     logger.info("Creating QueryRewriteService instance")
-    return QueryRewriteService()  # ← 수정: 인자 없이 호출!
+    return QueryRewriteService()
 
-# --- Health Aggregator 의존성 주입 방식 수정 ---
+@lru_cache()
+def get_llm_reranker_service() -> LLMRerankerService:
+    """LLMRerankerService 싱글톤 (BGE 대체)"""
+    logger.info("Creating LLMRerankerService instance")
+    return LLMRerankerService()
+
 def get_health_aggregator(
     mongodb_client: MongoDBClient = Depends(get_mongodb_client_cached),
-    embedding_service: EmbeddingService = Depends(get_embedding_service),
-    reranker_client: RerankerClient = Depends(get_reranker_client)
+    embedding_service: EmbeddingService = Depends(get_embedding_service)
+    # reranker_client 제거
 ) -> HealthAggregator:
     """HealthAggregator 인스턴스를 생성하고 의존성을 주입합니다."""
     logger.debug("Creating HealthAggregator instance.")
     return HealthAggregator(
         mongodb_client=mongodb_client,
-        embedding_service=embedding_service,
-        reranker_client=reranker_client
+        embedding_service=embedding_service
+        # reranker_client 제거
     )
-# ------------------------------------
 
 def get_search_service(
     embedding_service: EmbeddingService = Depends(get_embedding_service),
     analysis_service: AnalysisService = Depends(get_analysis_service),
     portfolio_repo: PortfolioRepository = Depends(get_portfolio_repository),
-    reranker: RerankerClient = Depends(get_reranker_client),
-    query_rewrite_service: QueryRewriteService = Depends(get_query_rewrite_service)
+    query_rewrite_service: QueryRewriteService = Depends(get_query_rewrite_service),
+    llm_reranker_service: LLMRerankerService = Depends(get_llm_reranker_service)  # ⭐ BGE 대체
 ) -> SearchService:
     return SearchService(
         embedding_service=embedding_service,
         analysis_service=analysis_service,
         portfolio_repo=portfolio_repo,
-        reranker=reranker,
-        query_rewrite_service=query_rewrite_service
+        query_rewrite_service=query_rewrite_service,
+        llm_reranker_service=llm_reranker_service  # ⭐ BGE 대체
     )
 
 def get_portfolio_processor(
@@ -149,9 +153,10 @@ async def startup_dependencies():
     await mongodb_client.connect()
     await mongodb_client.create_indexes()
     get_embedding_service()
-    get_reranker_client()
+    # get_reranker_client()  # ❌ BGE 제거
     get_query_rewrite_service()
-    logger.info("Dependencies initialized successfully")
+    get_llm_reranker_service()  # ⭐ LLM Reranker 초기화
+    logger.info("Dependencies initialized successfully (BGE Reranker removed)")
 
 async def shutdown_dependencies():
     logger.info("Shutting down dependencies...")

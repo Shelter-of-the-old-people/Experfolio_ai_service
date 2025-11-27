@@ -31,20 +31,25 @@ class CandidateResult(BaseModel):
         }
 
 
+
 class AlternativeCandidate(BaseModel):
     """
-    대안 후보자 (Reranker threshold 통과, LLM 분석 없음)
+    대안 후보자 (11위 이하)
+    
+    상세 분석 없이 점수만 제공
     """
     userId: str = Field(..., description="사용자 ID (UUID)")
+    
+    # 파이프라인 점수들 (실제 사용)
     vector_score: float = Field(..., description="벡터 검색 점수 (0.0-1.0)")
-    rerank_score: float = Field(..., description="Reranker 점수")
+    llm_rerank_score: float = Field(..., description="LLM Reranker 점수 (0.0-1.0)")
     
     class Config:
         json_schema_extra = {
             "example": {
-                "userId": "550e8400-e29b-41d4-a716-446655440011",
-                "vector_score": 0.68,
-                "rerank_score": 0.72
+                "userId": "user-011",
+                "vector_score": 0.72,
+                "llm_rerank_score": 0.65
             }
         }
 
