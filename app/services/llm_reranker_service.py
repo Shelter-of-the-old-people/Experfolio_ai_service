@@ -30,7 +30,7 @@ class LLMRerankerService:
     - 짧은 입력 (각 후보 200자 요약)
     """
     
-    BATCH_SIZE = 50
+    BATCH_SIZE = 30
     
     RERANK_PROMPT_TEMPLATE = """
 You are a recruitment expert evaluating candidate portfolios for job matching.
@@ -130,7 +130,7 @@ CRITICAL CONSTRAINTS:
         self,
         query: str,
         candidates: List[Dict],
-        threshold: Optional[float] = None  # ← threshold 파라미터!
+        threshold: Optional[float] = None 
     ) -> Result[List[Dict]]:
         """
         후보자 목록을 배치 단위로 LLM 재순위 매기기 (Threshold 기반)
@@ -252,7 +252,7 @@ CRITICAL CONSTRAINTS:
             
             response = await asyncio.wait_for(
                 self._llm_client.chat.completions.create(
-                    model=self._settings.OPENAI_MODEL,
+                    model=self._settings.LLM_RERANKER_MODEL,
                     messages=[
                         {
                             "role": "system",
@@ -266,7 +266,7 @@ CRITICAL CONSTRAINTS:
                     temperature=self._settings.LLM_RERANKER_TEMPERATURE,
                     max_tokens=self._settings.LLM_RERANKER_MAX_TOKENS
                 ),
-                timeout=15.0
+                timeout=30.0
             )
             
             response_text = response.choices[0].message.content.strip()

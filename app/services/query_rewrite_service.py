@@ -306,7 +306,7 @@ Output ONLY the rewritten query in Korean. No explanations, no JSON, just the na
         
         try:
             response = await self._llm_client.chat.completions.create(
-                model=self._settings.OPENAI_MODEL,
+                model=self._settings.QUERY_REWRITE_MODEL,
                 messages=[
                     {
                         "role": "system",

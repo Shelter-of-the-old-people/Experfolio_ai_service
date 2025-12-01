@@ -21,8 +21,11 @@ class Settings(BaseSettings):
     
     # OpenAI 설정
     OPENAI_API_KEY: str = Field(..., description="OpenAI API 키")
-    OPENAI_MODEL: str = Field(default="gpt-4o", description="사용할 OpenAI 모델")
+    OPENAI_MODEL: str = Field(default="gpt-4o-mini", description="사용할 OpenAI 모델")
     OPENAI_TEMPERATURE: float = Field(default=0.7, description="생성 온도")
+    QUERY_REWRITE_MODEL: str = "gpt-3.5-turbo"  # 쿼리 재작성
+    LLM_RERANKER_MODEL: str = "gpt-4o-mini"  # LLM Reranker
+    LLM_ANALYSIS_MODEL: str = "gpt-4"  # 상세 분
     
     # KURE 모델 설정
     KURE_MODEL_NAME: str = Field(
