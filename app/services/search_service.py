@@ -201,12 +201,15 @@ class SearchService:
     ) -> List[CandidateResult]:
         """병렬로 최종 후보자 목록에 대해 LLM 분석을 수행합니다."""
         logger.info(f"Starting parallel analysis for {len(results)} candidates")
+
+        timeout = getattr(settings, 'LLM_ANALYSIS_TIMEOUT', 15.0)
         
         tasks = [
             self._analyze_single_candidate_with_timeout(
                 query=query,
                 result=result,
-                index=idx
+                index=idx,
+                timeout=timeout
             )
             for idx, result in enumerate(results)
         ]
@@ -241,7 +244,7 @@ class SearchService:
         query: str,
         result: dict,
         index: int,
-        timeout: float = 10.0
+        timeout: float = 30.0
     ) -> Optional[CandidateResult]:
         """단일 후보자를 분석합니다 (타임아웃 포함)."""
         user_id = result.get('userId', 'unknown')

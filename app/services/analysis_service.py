@@ -37,7 +37,7 @@ class AnalysisService:
             temperature: 생성 온도 (기본값: settings에서 로드)
         """
         self._api_key = api_key or settings.OPENAI_API_KEY
-        self._model_name = model_name or settings.OPENAI_MODEL
+        self._model_name = model_name or settings.LLM_ANALYSIS_MODEL
         self._temperature = temperature or settings.OPENAI_TEMPERATURE
 
         self._llm_client = OpenAI(api_key=self._api_key)
