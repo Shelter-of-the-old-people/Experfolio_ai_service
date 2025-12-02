@@ -25,6 +25,7 @@ class SearchService:
     - BGE Reranker 제거, LLM Reranker로 완전 대체
     - Threshold 기반 필터링
     - Top 10개만 상세 분석
+    - Semaphore 동시성 제어로 Rate Limit 방지
     """
     
     def __init__(
@@ -41,7 +42,14 @@ class SearchService:
         self._query_rewrite_service = query_rewrite_service
         self._llm_reranker_service = llm_reranker_service
         
-        logger.info("SearchService initialized (LLM Reranker only, Top 10 analysis)")
+        self._analysis_semaphore = asyncio.Semaphore(
+            settings.LLM_ANALYSIS_CONCURRENCY
+        )
+        
+        logger.info(
+            f"SearchService initialized (LLM Reranker only, Top 10 analysis, "
+            f"Concurrency: {settings.LLM_ANALYSIS_CONCURRENCY})"
+        )
     
     async def search_portfolios(self, query: str, enable_rewrite: bool = True) -> Result:
         start_time = time.time()
@@ -144,7 +152,6 @@ class SearchService:
             # 7. 응답 생성
             candidates = analyzed_candidates[:10]
             
-            # alternativeCandidates: 11위~ 모두 점수만!
             alternative_candidates = []
             for candidate in llm_reranked[analysis_top_k:]:
                 alternative_candidates.append(AlternativeCandidate(
@@ -184,7 +191,6 @@ class SearchService:
             return Err(SystemError(error=e, context={"query": query[:50]}))
 
     def _empty_response(self, elapsed: float, query_rewrite_info) -> SearchResponse:
-        """빈 응답 생성"""
         return SearchResponse(
             status="success", 
             candidates=[], 
@@ -199,7 +205,6 @@ class SearchService:
         query: str, 
         results: List[dict]
     ) -> List[CandidateResult]:
-        """병렬로 최종 후보자 목록에 대해 LLM 분석을 수행합니다."""
         logger.info(f"Starting parallel analysis for {len(results)} candidates")
 
         timeout = getattr(settings, 'LLM_ANALYSIS_TIMEOUT', 15.0)
@@ -246,47 +251,47 @@ class SearchService:
         index: int,
         timeout: float = 30.0
     ) -> Optional[CandidateResult]:
-        """단일 후보자를 분석합니다 (타임아웃 포함)."""
         user_id = result.get('userId', 'unknown')
         
-        try:
-            portfolio_text = result.get('embeddings', {}).get('searchableText', '')
-            if not portfolio_text:
-                logger.warning(f"No text for candidate '{user_id}' (index {index}), skipping.")
+        async with self._analysis_semaphore:
+            try:
+                portfolio_text = result.get('embeddings', {}).get('searchableText', '')
+                if not portfolio_text:
+                    logger.warning(f"No text for candidate '{user_id}' (index {index}), skipping.")
+                    return None
+                
+                analysis_result = await asyncio.wait_for(
+                    self._analysis_service.analyze_candidate_match_async(
+                        query,
+                        portfolio_text
+                    ),
+                    timeout=timeout
+                )
+                
+                match analysis_result:
+                    case Ok(analysis):
+                        logger.debug(f"Successfully analyzed candidate '{user_id}' (index {index}).")
+                        return CandidateResult(
+                            userId=user_id,
+                            matchScore=float(analysis.get('matchScore', 0.0)),
+                            matchReason=analysis.get('matchReason', 'N/A'),
+                            keywords=analysis.get('keywords', [])
+                        )
+                    case Err(error_type=RateLimitError()):
+                        logger.warning(
+                            f"Rate limit hit for candidate '{user_id}' (index {index}), skipping."
+                        )
+                        return None
+                    case Err():
+                        logger.error(
+                            f"Analysis failed for candidate '{user_id}' (index {index}), skipping."
+                        )
+                        return None
+            
+            except asyncio.TimeoutError:
+                logger.warning(f"Candidate {index} analysis timeout after {timeout}s (userId: {user_id})")
                 return None
             
-            analysis_result = await asyncio.wait_for(
-                self._analysis_service.analyze_candidate_match_async(
-                    query,
-                    portfolio_text
-                ),
-                timeout=timeout
-            )
-            
-            match analysis_result:
-                case Ok(analysis):
-                    logger.debug(f"Successfully analyzed candidate '{user_id}' (index {index}).")
-                    return CandidateResult(
-                        userId=user_id,
-                        matchScore=float(analysis.get('matchScore', 0.0)),
-                        matchReason=analysis.get('matchReason', 'N/A'),
-                        keywords=analysis.get('keywords', [])
-                    )
-                case Err(error_type=RateLimitError()):
-                    logger.warning(
-                        f"Rate limit hit for candidate '{user_id}' (index {index}), skipping."
-                    )
-                    return None
-                case Err():
-                    logger.error(
-                        f"Analysis failed for candidate '{user_id}' (index {index}), skipping."
-                    )
-                    return None
-        
-        except asyncio.TimeoutError:
-            logger.warning(f"Candidate {index} analysis timeout after {timeout}s (userId: {user_id})")
-            return None
-        
-        except Exception as e:
-            logger.error(f"Candidate {index} analysis unexpected error: {type(e).__name__}: {str(e)}")
-            return None
+            except Exception as e:
+                logger.error(f"Candidate {index} analysis unexpected error: {type(e).__name__}: {str(e)}")
+                return None

@@ -24,8 +24,8 @@ class LLMRerankerService:
     - 도메인 용어 및 관련 경험 정확히 평가
     
     특징:
-    - 배치 처리 (50개씩)로 Timeout 방지
-    - 병렬 처리로 속도 최적화
+    - 배치 처리 (30개씩)로 Timeout 방지
+    - Semaphore로 배치 동시성 제어
     - Threshold 기반 유동적 필터링
     - 짧은 입력 (각 후보 200자 요약)
     """
@@ -124,7 +124,16 @@ CRITICAL CONSTRAINTS:
     def __init__(self):
         self._llm_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
         self._settings = settings
-        logger.info(f"LLMRerankerService initialized with GPT-4o (batch size: {self.BATCH_SIZE})")
+        
+        self._batch_semaphore = asyncio.Semaphore(
+            getattr(settings, 'LLM_RERANKER_BATCH_CONCURRENCY', 2)
+        )
+        
+        logger.info(
+            f"LLMRerankerService initialized with GPT-4o "
+            f"(batch size: {self.BATCH_SIZE}, "
+            f"batch concurrency: {getattr(settings, 'LLM_RERANKER_BATCH_CONCURRENCY', 2)})"
+        )
     
     async def rerank(
         self,
@@ -157,7 +166,6 @@ CRITICAL CONSTRAINTS:
                 f"(batch size: {self.BATCH_SIZE}, threshold: {threshold})"
             )
             
-            # 1. 배치 나누기
             batches = []
             for i in range(0, num_candidates, self.BATCH_SIZE):
                 batch = candidates[i:i+self.BATCH_SIZE]
@@ -165,7 +173,6 @@ CRITICAL CONSTRAINTS:
             
             logger.info(f"Split into {len(batches)} batches")
             
-            # 2. 각 배치 병렬 처리
             tasks = [
                 self._rerank_batch(query, batch, batch_idx)
                 for batch_idx, batch in enumerate(batches)
@@ -173,7 +180,6 @@ CRITICAL CONSTRAINTS:
             
             batch_results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            # 3. 결과 병합
             all_scored_candidates = []
             failed_batches = 0
             
@@ -192,19 +198,16 @@ CRITICAL CONSTRAINTS:
             if failed_batches > 0:
                 logger.warning(f"{failed_batches}/{len(batches)} batches failed")
             
-            # 4. 전체 정렬
             all_scored_candidates.sort(
                 key=lambda x: x.get('llm_rerank_score', 0.0), 
                 reverse=True
             )
             
-            # 5. Threshold 필터링
             passed_candidates = [
                 c for c in all_scored_candidates 
                 if c.get('llm_rerank_score', 0.0) >= threshold
             ]
             
-            # 6. 최소 개수 보장
             if len(passed_candidates) < min_candidates:
                 logger.warning(
                     f"Only {len(passed_candidates)} passed threshold {threshold}, "
@@ -231,67 +234,69 @@ CRITICAL CONSTRAINTS:
         batch: List[Dict], 
         batch_idx: int
     ) -> List[Dict]:
-        """단일 배치 처리 (최대 50개)"""
-        logger.debug(f"Processing batch {batch_idx}: {len(batch)} candidates")
+        """단일 배치 처리 (최대 30개)"""
         
-        try:
-            brief_candidates = [
-                {
-                    "userId": c.get('userId', 'unknown'),
-                    "brief": self._extract_brief(c),
-                    "vector_score": c.get('score', 0.0)
-                }
-                for c in batch
-            ]
+        async with self._batch_semaphore:
+            logger.debug(f"Processing batch {batch_idx}: {len(batch)} candidates")
             
-            prompt = self.RERANK_PROMPT_TEMPLATE.format(
-                num_candidates=len(batch),
-                query=query,
-                candidates_json=json.dumps(brief_candidates, ensure_ascii=False, indent=2)
-            )
-            
-            response = await asyncio.wait_for(
-                self._llm_client.chat.completions.create(
-                    model=self._settings.LLM_RERANKER_MODEL,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are an expert recruitment evaluator. Respond only with valid JSON."
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
-                    temperature=self._settings.LLM_RERANKER_TEMPERATURE,
-                    max_tokens=self._settings.LLM_RERANKER_MAX_TOKENS
-                ),
-                timeout=30.0
-            )
-            
-            response_text = response.choices[0].message.content.strip()
-            score_map = self._parse_scores(response_text)
-            
-            for candidate in batch:
-                user_id = candidate.get('userId', 'unknown')
-                candidate['llm_rerank_score'] = score_map.get(user_id, 0.0)
-            
-            logger.debug(
-                f"Batch {batch_idx} completed: "
-                f"scores [{min(score_map.values()):.3f} - {max(score_map.values()):.3f}]"
-            )
-            
-            return batch
-            
-        except asyncio.TimeoutError:
-            logger.error(f"Batch {batch_idx} timeout after 15s")
-            raise
-        except json.JSONDecodeError as e:
-            logger.error(f"Batch {batch_idx} JSON parse error: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Batch {batch_idx} failed: {type(e).__name__}: {str(e)}")
-            raise
+            try:
+                brief_candidates = [
+                    {
+                        "userId": c.get('userId', 'unknown'),
+                        "brief": self._extract_brief(c),
+                        "vector_score": c.get('score', 0.0)
+                    }
+                    for c in batch
+                ]
+                
+                prompt = self.RERANK_PROMPT_TEMPLATE.format(
+                    num_candidates=len(batch),
+                    query=query,
+                    candidates_json=json.dumps(brief_candidates, ensure_ascii=False, indent=2)
+                )
+                
+                response = await asyncio.wait_for(
+                    self._llm_client.chat.completions.create(
+                        model=self._settings.LLM_RERANKER_MODEL,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": "You are an expert recruitment evaluator. Respond only with valid JSON."
+                            },
+                            {
+                                "role": "user",
+                                "content": prompt
+                            }
+                        ],
+                        temperature=self._settings.LLM_RERANKER_TEMPERATURE,
+                        max_tokens=self._settings.LLM_RERANKER_MAX_TOKENS
+                    ),
+                    timeout=45.0
+                )
+                
+                response_text = response.choices[0].message.content.strip()
+                score_map = self._parse_scores(response_text)
+                
+                for candidate in batch:
+                    user_id = candidate.get('userId', 'unknown')
+                    candidate['llm_rerank_score'] = score_map.get(user_id, 0.0)
+                
+                logger.debug(
+                    f"Batch {batch_idx} completed: "
+                    f"scores [{min(score_map.values()):.3f} - {max(score_map.values()):.3f}]"
+                )
+                
+                return batch
+                
+            except asyncio.TimeoutError:
+                logger.error(f"Batch {batch_idx} timeout after 45s")
+                raise
+            except json.JSONDecodeError as e:
+                logger.error(f"Batch {batch_idx} JSON parse error: {e}")
+                raise
+            except Exception as e:
+                logger.error(f"Batch {batch_idx} failed: {type(e).__name__}: {str(e)}")
+                raise
     
     def _extract_brief(self, candidate: Dict) -> str:
         """후보자 정보에서 간단한 요약 추출"""

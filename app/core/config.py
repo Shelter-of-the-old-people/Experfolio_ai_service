@@ -19,14 +19,14 @@ class Settings(BaseSettings):
     MONGODB_URI: str = Field(..., description="MongoDB 연결 URI")
     MONGODB_DATABASE: str = Field(default="experfolio", description="데이터베이스 이름")
 
-    LLM_ANALYSIS_CONCURRENCY: int = 1
+    LLM_ANALYSIS_CONCURRENCY: int = 5
     
     # OpenAI 설정
     OPENAI_API_KEY: str = Field(..., description="OpenAI API 키")
-    OPENAI_MODEL: str = Field(default="gpt-4o-mini", description="사용할 OpenAI 모델")
+    OPENAI_MODEL: str = Field(default="gpt-4o", description="사용할 OpenAI 모델")
     OPENAI_TEMPERATURE: float = Field(default=0.7, description="생성 온도")
-    QUERY_REWRITE_MODEL: str = "gpt-3.5-turbo"  # 쿼리 재작성
-    LLM_RERANKER_MODEL: str = "gpt-4o"  # LLM Reranker
+    QUERY_REWRITE_MODEL: str = "gpt-4o-mini"  # 쿼리 재작성
+    LLM_RERANKER_MODEL: str = "gpt-4o-mini"  # LLM Reranker
     LLM_ANALYSIS_MODEL: str = "gpt-4o"  # 상세 분
 
     LLM_ANALYSIS_TIMEOUT: float = 30.0
