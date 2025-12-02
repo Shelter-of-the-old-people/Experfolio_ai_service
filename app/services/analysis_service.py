@@ -4,9 +4,16 @@ OpenAI GPT-4를 사용한 분석 서비스.
 """
 from typing import Dict
 import json
-from openai import OpenAI, AsyncOpenAI, OpenAIError
+from openai import OpenAI, AsyncOpenAI, OpenAIError, APIError
 from openai import RateLimitError as OpenAIRateLimitError
 from openai import AuthenticationError as OpenAIAuthenticationError
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_random_exponential,
+    retry_if_exception_type
+)
+
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.result import (
@@ -44,6 +51,26 @@ class AnalysisService:
         self._async_llm_client = AsyncOpenAI(api_key=self._api_key)
 
         logger.info(f"AnalysisService initialized with model: {self._model_name}")
+
+    # --- [New] Retry Logic for Async Call ---
+    @retry(
+        retry=retry_if_exception_type((OpenAIRateLimitError, APIError)),
+        wait=wait_random_exponential(multiplier=1, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True
+    )
+    async def _call_llm_async(self, messages: list) -> str:
+        """
+        OpenAI 비동기 호출을 위한 내부 메소드 (Retry 적용)
+        RateLimitError 또는 APIError 발생 시 지수 백오프로 최대 5회 재시도합니다.
+        """
+        response = await self._async_llm_client.chat.completions.create(
+            model=self._model_name,
+            messages=messages,
+            temperature=self._temperature,
+            max_tokens=1000
+        )
+        return response.choices[0].message.content.strip()
 
     def analyze_search_intent(self, query: str) -> Result:
         """
@@ -214,6 +241,7 @@ class AnalysisService:
     ) -> Result:
         """
         후보자와 검색 쿼리의 매칭도를 비동기로 분석합니다.
+        * Tenacity Retry가 적용된 _call_llm_async를 사용합니다.
 
         Args:
             query: 검색 쿼리
@@ -227,25 +255,25 @@ class AnalysisService:
         try:
             logger.debug(f"Analyzing candidate match (async) for query: {query[:50]}...")
 
-            prompt = self._create_match_prompt(query, portfolio_text)
+            # 입력 텍스트 길이 제한 (토큰 절약)
+            safe_text = portfolio_text[:3000] if len(portfolio_text) > 3000 else portfolio_text
+            
+            prompt = self._create_match_prompt(query, safe_text)
+            
+            messages = [
+                {
+                    "role": "system",
+                    "content": "You are a highly experienced senior recruiter specializing in portfolio-based hiring across ALL industries (IT, Design, Marketing, Planning, Sales, Content Creation, etc.). Your task is to provide critical, evidence-based analysis comparing a search query to a candidate's portfolio, and output the result in a structured JSON format."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
 
-            response = await self._async_llm_client.chat.completions.create(
-                model=self._model_name,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a highly experienced senior recruiter specializing in portfolio-based hiring across ALL industries (IT, Design, Marketing, Planning, Sales, Content Creation, etc.). Your task is to provide critical, evidence-based analysis comparing a search query to a candidate's portfolio, and output the result in a structured JSON format."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                temperature=self._temperature,
-                max_tokens=1000
-            )
+            # Retry 로직이 적용된 내부 메소드 호출
+            result_text = await self._call_llm_async(messages)
 
-            result_text = response.choices[0].message.content.strip()
             result = self._parse_json_response(result_text)
 
             match_score = result.get('matchScore', -1)
@@ -260,7 +288,8 @@ class AnalysisService:
             return Ok(result)
 
         except OpenAIRateLimitError as e:
-            logger.warning(f"Match analysis (async) hit rate limit: {str(e)}")
+            # 5번 재시도 후에도 실패한 경우
+            logger.warning(f"Match analysis (async) failed after retries (Rate Limit): {str(e)}")
             return Err(RateLimitError(
                 error=e,
                 context={"query": query[:50], "model": self._model_name}

@@ -26,6 +26,7 @@ apscheduler==3.10.4
 # Utilities
 python-dotenv==1.0.0
 python-multipart==0.0.6
+tenacity==8.2.3
 
 # Logging
 loguru==0.7.2

@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     MONGODB_URI: str = Field(..., description="MongoDB 연결 URI")
     MONGODB_DATABASE: str = Field(default="experfolio", description="데이터베이스 이름")
 
-    LLM_ANALYSIS_CONCURRENCY: int = 5
+    LLM_ANALYSIS_CONCURRENCY: int = 3
     
     # OpenAI 설정
     OPENAI_API_KEY: str = Field(..., description="OpenAI API 키")
