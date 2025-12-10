@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     MONGODB_DATABASE: str = Field(default="experfolio", description="데이터베이스 이름")
 
     LLM_ANALYSIS_CONCURRENCY: int = 3
+
+    STORAGE_BASE_URL: str = Field(
+        default="https://pub-281f6f108f6e4b379ad70e053b5d6c34.r2.dev/",
+        description="R2 스토리지 퍼블릭 URL"
+    )
     
     # OpenAI 설정
     OPENAI_API_KEY: str = Field(..., description="OpenAI API 키")
